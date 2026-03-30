@@ -4,6 +4,10 @@ import ScrollTrigger from "gsap/ScrollTrigger";
 
 gsap.registerPlugin(ScrollTrigger);
 
+/** CSS `rotate(-45deg)` — shared by layout math and DOM */
+const COS_M45 = Math.cos(-Math.PI / 4);
+const SIN_M45 = Math.sin(-Math.PI / 4);
+
 /** Tunable in one place — animation + copy + scroll range */
 export const animationConfig = {
   /** Logical segments; more lines appear as the box gains height. */
@@ -19,10 +23,8 @@ export const animationConfig = {
    * Example: `"10vmin"` is 10% of the smaller viewport dimension.
    */
   rectWidth: "10vmin",
-  /** Upper bound on solved height: fraction of min(viewport width, height). */
-  maxHeightFraction: 0.99,
-  /** Treat a corner as on an edge within this many pixels. */
-  edgeSnapPx: 2.5,
+  /** Upper bound on solved height: fraction of min(viewport width, height). Use 1 to avoid clamping below the riding-line height. */
+  maxHeightFraction: 1,
   /** Scroll distance (px) that corresponds to a 1% change in normalized scroll progress (see body height). */
   scrollPixelsPerPercent: 12,
   /** Multiplier on total scroll length derived from scrollPixelsPerPercent. */
@@ -33,9 +35,276 @@ export const animationConfig = {
   lineHeightPx: 22,
   /** Font shorthand passed to Pretext — must match `.square-text` in CSS. */
   pretextFont: '400 15px "Inter", ui-sans-serif, sans-serif',
+  /**
+   * When true, or when the page URL has `?debug=1`, shows a debug overlay and enables
+   * `window.__ridingEdgesDebug` (last snapshot + `copyDebugJson()`).
+   */
+  debug: false,
 } as const;
 
 type Config = typeof animationConfig;
+
+function isDebugEnabled(cfg: Config): boolean {
+  if (typeof window === "undefined") return false;
+  if (cfg.debug) return true;
+  try {
+    return new URLSearchParams(window.location.search).get("debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Local box coords (CSS: x right, y down) → screen position relative to center already applied. */
+function localMidToScreen(cx: number, cy: number, lx: number, ly: number) {
+  return {
+    x: cx + lx * COS_M45 - ly * SIN_M45,
+    y: cy + lx * SIN_M45 + ly * COS_M45,
+  };
+}
+
+/**
+ * Pin local bottom-left corner (-w/2, h/2) in CSS coords to screen (t·W, (1−t)·H) — the viewport
+ * diagonal from bottom-left to top-right. This keeps the shape riding the frame as t increases.
+ */
+function centerFromPinnedBottomLeftVertex(
+  t: number,
+  w: number,
+  height: number,
+  W: number,
+  H: number
+): { cx: number; cy: number } {
+  const tt = Math.min(1, Math.max(0, t));
+  const vx = tt * W;
+  const vy = H * (1 - tt);
+  const lx = -w / 2;
+  const ly = height / 2;
+  const dx = lx * COS_M45 - ly * SIN_M45;
+  const dy = lx * SIN_M45 + ly * COS_M45;
+  return { cx: vx - dx, cy: vy - dy };
+}
+
+function minUPlusVVerticalEdgeMids(
+  cx: number,
+  cy: number,
+  w: number,
+  H: number
+): { left: number; right: number; min: number } {
+  const sL = localMidToScreen(cx, cy, -w / 2, 0);
+  const sR = localMidToScreen(cx, cy, w / 2, 0);
+  const sumL = sL.x + (H - sL.y);
+  const sumR = sR.x + (H - sR.y);
+  return { left: sumL, right: sumR, min: Math.min(sumL, sumR) };
+}
+
+/** Self-consistent h ≈ min(u+v) for vertical edge mids with pinned center (fixed-point). */
+function solveHeightFromEdgeMidLines(
+  tt: number,
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number
+): number {
+  let h = Math.max(hMin, Math.min(hMax, (hMin + hMax) / 2));
+  for (let i = 0; i < 52; i++) {
+    const { cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, h, W, H);
+    const m = minUPlusVVerticalEdgeMids(cx, cy, w, H).min;
+    const hNew = Math.max(hMin, Math.min(hMax, m));
+    if (Math.abs(hNew - h) < 0.015) {
+      return hNew;
+    }
+    h = 0.55 * h + 0.45 * hNew;
+  }
+  return Math.max(hMin, Math.min(hMax, h));
+}
+
+export type GeometryDebugSnapshot = {
+  /** Scroll progress 0..1 */
+  t: number;
+  viewport: { W: number; H: number };
+  /** Unrotated width (px) */
+  w: number;
+  /** Legacy closed form (old AABB path); for comparison only */
+  hRawFromRidingLineFormula: number;
+  /** Pinned vertex target in screen space: (t·W, (1−t)·H) */
+  pinnedVertexTargetScreen: { x: number; y: number };
+  hMin: number;
+  hCap: number;
+  hAfterMinMaxClamp: number;
+  /** Whether rotated bounds fit the viewport after all clamps */
+  fitsViewportFinal: boolean;
+  /** Set when we shrink h to fit the viewport */
+  hFromMaxHeightFitOnly: number | null;
+  hFinal: number;
+  L: number;
+  centerScreen: { cx: number; cy: number };
+  boundsScreen: { minX: number; maxX: number; minY: number; maxY: number };
+  /** Bottom-left origin, y up: u = x_screen, v = H − y_screen */
+  leftVerticalEdgeMid: {
+    local: { x: number; y: number };
+    screen: { x: number; y: number };
+    user: { u: number; v: number };
+    uPlusV: number;
+  };
+  rightVerticalEdgeMid: {
+    local: { x: number; y: number };
+    screen: { x: number; y: number };
+    user: { u: number; v: number };
+    uPlusV: number;
+  };
+  minUPlusV: number;
+  /** min(u+v) − hFinal; should be ~0 if construction matches */
+  deltaMinUPlusVMinusH: number;
+  notes: string[];
+};
+
+function buildGeometryDebugSnapshot(
+  tt: number,
+  w: number,
+  W: number,
+  H: number,
+  cfg: Config
+): GeometryDebugSnapshot {
+  const t = Math.min(1, Math.max(0, tt));
+  const hMin = oneLineBoxHeightPx(cfg);
+  const hCap = cfg.maxHeightFraction * Math.min(W, H);
+  const hRaw = heightFromRidingLineConstruction(t, w, W, H);
+  const hAfterClamp = Math.max(hMin, Math.min(hRaw, hCap));
+  const pinnedVertexTargetScreen = { x: t * W, y: H * (1 - t) };
+
+  if (w <= 1e-9) {
+    return {
+      t,
+      viewport: { W, H },
+      w,
+      hRawFromRidingLineFormula: hRaw,
+      pinnedVertexTargetScreen,
+      hMin,
+      hCap,
+      hAfterMinMaxClamp: hAfterClamp,
+      fitsViewportFinal: true,
+      hFromMaxHeightFitOnly: null,
+      hFinal: 0,
+      L: 0,
+      centerScreen: { cx: 0, cy: H },
+      boundsScreen: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+      leftVerticalEdgeMid: {
+        local: { x: 0, y: 0 },
+        screen: { x: 0, y: 0 },
+        user: { u: 0, v: 0 },
+        uPlusV: 0,
+      },
+      rightVerticalEdgeMid: {
+        local: { x: 0, y: 0 },
+        screen: { x: 0, y: 0 },
+        user: { u: 0, v: 0 },
+        uPlusV: 0,
+      },
+      minUPlusV: 0,
+      deltaMinUPlusVMinusH: 0,
+      notes: [],
+    };
+  }
+
+  const hSolveUnclamped = solveHeightFromEdgeMidLines(t, w, W, H, hMin, hCap);
+  const { cx: cxTry, cy: cyTry } = centerFromPinnedBottomLeftVertex(
+    t,
+    w,
+    hSolveUnclamped,
+    W,
+    H
+  );
+  const wouldOverflow = !fitsViewport(
+    boundsRotated(cxTry, cyTry, w, hSolveUnclamped),
+    W,
+    H,
+    0.25
+  );
+  const hFit = wouldOverflow ? maxHeightFitOnly(t, w, W, H, cfg) : null;
+  const notes: string[] = [];
+  if (wouldOverflow) {
+    notes.push("Pinned solve overflowed viewport; h reduced via maxHeightFitOnly.");
+  }
+
+  const { cx, cy, h } = geometryForFrame(tt, w, W, H, cfg);
+  const b = boundsRotated(cx, cy, w, h);
+  const fits = fitsViewport(b, W, H, 0.25);
+  if (!fits) {
+    notes.push("Unexpected: geometryForFrame still outside viewport.");
+  }
+
+  const L = (w + h) / Math.SQRT2;
+  const ll = { x: -w / 2, y: 0 };
+  const lr = { x: w / 2, y: 0 };
+  const sL = localMidToScreen(cx, cy, ll.x, ll.y);
+  const sR = localMidToScreen(cx, cy, lr.x, lr.y);
+  const uL = sL.x;
+  const vL = H - sL.y;
+  const uR = sR.x;
+  const vR = H - sR.y;
+  const sumL = uL + vL;
+  const sumR = uR + vR;
+  const minUPlusV = Math.min(sumL, sumR);
+
+  return {
+    t,
+    viewport: { W, H },
+    w,
+    hRawFromRidingLineFormula: hRaw,
+    pinnedVertexTargetScreen,
+    hMin,
+    hCap,
+    hAfterMinMaxClamp: hAfterClamp,
+    fitsViewportFinal: fits,
+    hFromMaxHeightFitOnly: hFit,
+    hFinal: h,
+    L,
+    centerScreen: { cx, cy },
+    boundsScreen: b,
+    leftVerticalEdgeMid: {
+      local: ll,
+      screen: sL,
+      user: { u: uL, v: vL },
+      uPlusV: sumL,
+    },
+    rightVerticalEdgeMid: {
+      local: lr,
+      screen: sR,
+      user: { u: uR, v: vR },
+      uPlusV: sumR,
+    },
+    minUPlusV,
+    deltaMinUPlusVMinusH: minUPlusV - h,
+    notes,
+  };
+}
+
+function formatDebugOverlay(s: GeometryDebugSnapshot): string {
+  const lines = [
+    `t=${s.t.toFixed(4)}  viewport ${s.viewport.W}×${s.viewport.H}  w=${s.w.toFixed(2)}`,
+    `pinned vertex screen (${s.pinnedVertexTargetScreen.x.toFixed(1)}, ${s.pinnedVertexTargetScreen.y.toFixed(1)})`,
+    `legacy AABB formula h=${s.hRawFromRidingLineFormula.toFixed(2)}  hMin=${s.hMin}  hCap=${s.hCap.toFixed(2)}`,
+    `h after legacy clamp=${s.hAfterMinMaxClamp.toFixed(2)}  hFinal=${s.hFinal.toFixed(2)}`,
+    `fitsViewport=${s.fitsViewportFinal}  hFitOnly=${s.hFromMaxHeightFitOnly ?? "—"}`,
+    `L=(w+h)/√2=${s.L.toFixed(2)}  center (${s.centerScreen.cx.toFixed(2)}, ${s.centerScreen.cy.toFixed(2)})`,
+    `bounds screen [${s.boundsScreen.minX.toFixed(1)}, ${s.boundsScreen.maxX.toFixed(1)}] × [${s.boundsScreen.minY.toFixed(1)}, ${s.boundsScreen.maxY.toFixed(1)}]`,
+    `left mid  user u+v=${s.leftVerticalEdgeMid.uPlusV.toFixed(2)}  (u=${s.leftVerticalEdgeMid.user.u.toFixed(2)}, v=${s.leftVerticalEdgeMid.user.v.toFixed(2)})`,
+    `right mid user u+v=${s.rightVerticalEdgeMid.uPlusV.toFixed(2)}  (u=${s.rightVerticalEdgeMid.user.u.toFixed(2)}, v=${s.rightVerticalEdgeMid.user.v.toFixed(2)})`,
+    `min(u+v)=${s.minUPlusV.toFixed(2)}  Δ(min−hFinal)=${s.deltaMinUPlusVMinusH.toFixed(4)}`,
+    ...s.notes.map((n) => `→ ${n}`),
+  ];
+  return lines.join("\n");
+}
+
+declare global {
+  interface Window {
+    /** Present when `?debug=1` or `animationConfig.debug` is true */
+    __ridingEdgesDebug?: {
+      last: GeometryDebugSnapshot | null;
+      copyDebugJson: () => Promise<void>;
+    };
+  }
+}
 
 const preparedCache = new Map<string, ReturnType<typeof prepare>>();
 
@@ -118,10 +387,6 @@ function maxFittingSegmentCount(
   return best;
 }
 
-/** CSS `rotate(-45deg)`: x' = x cos θ - y sin θ, y' = x sin θ + y cos θ, θ = -π/4 */
-const COS_M45 = Math.cos(-Math.PI / 4);
-const SIN_M45 = Math.sin(-Math.PI / 4);
-
 function rotatedCorners(
   cx: number,
   cy: number,
@@ -176,95 +441,23 @@ function fitsViewport(
   );
 }
 
-function cornersOnViewportEdges(
-  pts: readonly { x: number; y: number }[],
-  W: number,
-  H: number,
-  eps: number
-): number {
-  let n = 0;
-  for (const p of pts) {
-    if (
-      p.x <= eps ||
-      p.x >= W - eps ||
-      p.y <= eps ||
-      p.y >= H - eps
-    ) {
-      n++;
-    }
-  }
-  return n;
-}
-
 /** Unrotated box height for exactly one line: top/bottom padding plus one line at lineHeightPx. */
 function oneLineBoxHeightPx(cfg: Config): number {
   return cfg.paddingPx * 2 + cfg.lineHeightPx;
 }
 
-function centerAndBoundsForT(
-  t: number,
-  w: number,
-  height: number,
-  W: number,
-  H: number
-): { cx: number; cy: number; b: ReturnType<typeof boundsRotated> } {
-  const L = (w + height) / Math.SQRT2;
-  const tt = Math.min(1, Math.max(0, t));
-  const cx = (W - L) * tt + L / 2;
-  const cy = H - (H - L) * tt - L / 2;
-  const b = boundsRotated(cx, cy, w, height);
-  return { cx, cy, b };
-}
-
 /**
- * Largest height (≤ cap) for which the -45° rect fits and at least two corners lie on viewport edges.
+ * Old AABB-path closed form (debug comparison only): assumed L = (w+h)/√2 center path.
  */
-function maxHeightFlushFeasible(
-  t: number,
-  w: number,
-  W: number,
-  H: number,
-  cfg: Config
-): number {
-  const tt = Math.min(1, Math.max(0, t));
-  const edgeEps = cfg.edgeSnapPx;
-  const hCap = cfg.maxHeightFraction * Math.min(W, H);
-  const hSearchMax = Math.min(2 * (W + H), hCap);
-
-  const feasibleWithFlush = (height: number): boolean => {
-    if (height < 1e-9) return false;
-    const { cx, cy, b } = centerAndBoundsForT(tt, w, height, W, H);
-    if (!fitsViewport(b, W, H, 0.25)) return false;
-    const pts = rotatedCorners(cx, cy, w, height);
-    return cornersOnViewportEdges(pts, W, H, edgeEps) >= 2;
-  };
-
-  const steps = 100;
-  let best = 0;
-  for (let i = 0; i <= steps; i++) {
-    const hTry = (i / steps) * hSearchMax;
-    if (feasibleWithFlush(hTry)) best = hTry;
-  }
-
-  if (best > 0) {
-    const step = hSearchMax / steps;
-    const hi = Math.min(best + step, hSearchMax);
-    if (feasibleWithFlush(hi)) {
-      let lo = best;
-      let hiB = hi;
-      for (let k = 0; k < 28; k++) {
-        const mid = (lo + hiB) / 2;
-        if (feasibleWithFlush(mid)) lo = mid;
-        else hiB = mid;
-      }
-      best = lo;
-    }
-  }
-
-  return best;
+function heightFromRidingLineConstruction(tt: number, w: number, W: number, H: number): number {
+  const t = Math.min(1, Math.max(0, tt));
+  const denom = Math.SQRT2 - 1 + 2 * t;
+  if (denom <= 1e-12) return 0;
+  const num = t * ((W + H) * Math.SQRT2 - 2 * w);
+  return Math.max(0, num / denom);
 }
 
-/** Largest height that fits in the viewport (flush ignored). */
+/** Largest height that fits in the viewport with pinned bottom-left vertex centering. */
 function maxHeightFitOnly(
   t: number,
   w: number,
@@ -276,14 +469,16 @@ function maxHeightFitOnly(
   const hCap = cfg.maxHeightFraction * Math.min(W, H);
   const hSearchMax = Math.min(2 * (W + H), hCap);
 
-  const centerAndBounds = (height: number) =>
-    centerAndBoundsForT(tt, w, height, W, H);
+  const boundsForHeight = (height: number) => {
+    const { cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, height, W, H);
+    return boundsRotated(cx, cy, w, height);
+  };
 
   let lo = 0;
   let hi = hSearchMax;
   for (let k = 0; k < 38; k++) {
     const mid = (lo + hi) / 2;
-    const { b } = centerAndBounds(mid);
+    const b = boundsForHeight(mid);
     if (fitsViewport(b, W, H, 0.25)) lo = mid;
     else hi = mid;
   }
@@ -291,9 +486,8 @@ function maxHeightFitOnly(
 }
 
 /**
- * Fixed width `w`, rotated -45°. Height is **one line** at t∈{0,1}, then grows toward mid-scroll
- * (sin curve) up to the largest flush-feasible height for that `t`. Center follows the diagonal
- * between bottom-left and top-right so start/end sit in the corners when `h` is small.
+ * Fixed width `w`, rotated -45°. Center pins local bottom-left corner to viewport diagonal (tW, (1−t)H).
+ * Height solves h ≈ min(u+v) for left/right vertical edge mids (user coords) via fixed-point iteration.
  */
 function geometryForFrame(
   t: number,
@@ -309,17 +503,17 @@ function geometryForFrame(
   }
 
   const hMin = oneLineBoxHeightPx(cfg);
-  let hPeak = maxHeightFlushFeasible(tt, w, W, H, cfg);
-  if (hPeak < hMin) {
-    hPeak = Math.max(maxHeightFitOnly(tt, w, W, H, cfg), hMin);
-  } else {
-    hPeak = Math.max(hPeak, hMin);
+  const hCap = cfg.maxHeightFraction * Math.min(W, H);
+
+  let h = solveHeightFromEdgeMidLines(tt, w, W, H, hMin, hCap);
+  let { cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, h, W, H);
+
+  if (!fitsViewport(boundsRotated(cx, cy, w, h), W, H, 0.25)) {
+    const hFit = maxHeightFitOnly(tt, w, W, H, cfg);
+    h = Math.max(hMin, Math.min(h, hFit));
+    ({ cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, h, W, H));
   }
 
-  const rise = Math.sin(Math.PI * tt);
-  const h = hMin + (hPeak - hMin) * rise;
-
-  const { cx, cy } = centerAndBoundsForT(tt, w, h, W, H);
   return { cx, cy, h };
 }
 
@@ -349,6 +543,79 @@ function mount() {
   const rootFontPx = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
 
   const cfg = animationConfig;
+  const debugEnabled = isDebugEnabled(cfg);
+  let debugPre: HTMLPreElement | null = null;
+
+  if (debugEnabled) {
+    const wrap = document.createElement("div");
+    wrap.setAttribute("data-riding-edges-debug", "");
+    wrap.className =
+      "fixed bottom-0 right-0 z-[100] flex max-h-[min(70vh,520px)] max-w-[min(100vw,560px)] flex-col overflow-hidden";
+    wrap.style.pointerEvents = "auto";
+    wrap.style.font = '11px/1.35 ui-monospace, monospace';
+    wrap.style.background = "rgba(0,0,0,.92)";
+    wrap.style.color = "#4ade80";
+    wrap.style.border = "1px solid #3f3f46";
+    wrap.style.borderBottom = "none";
+    wrap.style.borderLeft = "none";
+
+    const btnRow = document.createElement("div");
+    btnRow.style.display = "flex";
+    btnRow.style.gap = "8px";
+    btnRow.style.alignItems = "center";
+    btnRow.style.padding = "6px 10px";
+    btnRow.style.borderBottom = "1px solid #3f3f46";
+    btnRow.style.flexShrink = "0";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Copy JSON";
+    btn.style.font = "inherit";
+    btn.style.cursor = "pointer";
+    btn.style.color = "#e4e4e7";
+    btn.style.background = "#27272a";
+    btn.style.padding = "2px 8px";
+    btn.style.border = "1px solid #52525b";
+    btn.style.borderRadius = "4px";
+
+    const hint = document.createElement("span");
+    hint.style.color = "#a1a1aa";
+    hint.textContent = "riding-edges debug";
+
+    btnRow.appendChild(btn);
+    btnRow.appendChild(hint);
+    debugPre = document.createElement("pre");
+    debugPre.style.margin = "0";
+    debugPre.style.padding = "10px";
+    debugPre.style.whiteSpace = "pre-wrap";
+    debugPre.style.wordBreak = "break-word";
+    debugPre.style.overflow = "auto";
+    debugPre.style.flex = "1";
+    debugPre.style.minHeight = "0";
+
+    wrap.appendChild(btnRow);
+    wrap.appendChild(debugPre);
+    document.body.appendChild(wrap);
+
+    window.__ridingEdgesDebug = {
+      last: null,
+      async copyDebugJson() {
+        const s = window.__ridingEdgesDebug?.last;
+        if (!s) return;
+        const text = JSON.stringify(s, null, 2);
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          console.warn("riding-edges: clipboard failed — dump:\n", text);
+        }
+      },
+    };
+
+    btn.addEventListener("click", () => {
+      void window.__ridingEdgesDebug?.copyDebugJson();
+    });
+  }
+
   const scrollRangePx =
     100 * cfg.scrollPixelsPerPercent * cfg.scrollHeightMultiplier;
   document.documentElement.style.setProperty(
@@ -406,6 +673,14 @@ function mount() {
       desiredCount
     );
     textEl.textContent = joinSegments(cfg.script, fitCount);
+
+    if (debugEnabled && debugPre) {
+      const snap = buildGeometryDebugSnapshot(tt, widthPx, vw, vh, cfg);
+      debugPre.textContent = formatDebugOverlay(snap);
+      if (window.__ridingEdgesDebug) {
+        window.__ridingEdgesDebug.last = snap;
+      }
+    }
   };
 
   const st = ScrollTrigger.create({
