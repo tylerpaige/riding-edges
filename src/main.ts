@@ -15,15 +15,20 @@ export const animationConfig = {
     "Scroll drives the shape.",
     "Fixed width: height is one line of text at the ends and grows through the middle of the scroll.",
     "Pretext measures lines without DOM thrash, so we only paint what fits.",
-    "Width stays constant; height is chosen so the rotated box keeps contact with the frame.",
-    "End opposite where you started, still riding the edges.",
+    "Width stays constant; height follows the edge-riding phases in user space (VBL origin, VTR opposite).",
+    "End at the same distance from VTR as you started from VBL.",
   ],
   /**
    * Fixed CSS width of the unrotated box (height is solved each frame). Supports px, em, rem, vw, vh, vmin, vmax.
    * Example: `"10vmin"` is 10% of the smaller viewport dimension.
    */
   rectWidth: "10vmin",
-  /** Upper bound on solved height: fraction of min(viewport width, height). Use 1 to avoid clamping below the riding-line height. */
+  /**
+   * Minimum CSS height of the unrotated box (geometry floor). Same length syntax as `rectWidth`.
+   * Initial placement at VBL uses this as the hypotenuse of the 45°/45°/90° corner triangle (see spec).
+   */
+  minRectHeight: "10vmin",
+  /** Upper bound on solved height: fraction of min(viewport width, height). */
   maxHeightFraction: 1,
   /** Scroll distance (px) that corresponds to a 1% change in normalized scroll progress (see body height). */
   scrollPixelsPerPercent: 12,
@@ -54,68 +59,280 @@ function isDebugEnabled(cfg: Config): boolean {
   }
 }
 
-/** Local box coords (CSS: x right, y down) → screen position relative to center already applied. */
-function localMidToScreen(cx: number, cy: number, lx: number, ly: number) {
-  return {
-    x: cx + lx * COS_M45 - ly * SIN_M45,
-    y: cy + lx * SIN_M45 + ly * COS_M45,
-  };
+function hCapPx(cfg: Config, W: number, H: number): number {
+  return cfg.maxHeightFraction * Math.min(W, H);
 }
 
-/**
- * Pin local bottom-left corner (-w/2, h/2) in CSS coords to screen (t·W, (1−t)·H) — the viewport
- * diagonal from bottom-left to top-right. This keeps the shape riding the frame as t increases.
- */
-function centerFromPinnedBottomLeftVertex(
-  t: number,
-  w: number,
-  height: number,
-  W: number,
-  H: number
-): { cx: number; cy: number } {
-  const tt = Math.min(1, Math.max(0, t));
-  const vx = tt * W;
-  const vy = H * (1 - tt);
-  const lx = -w / 2;
-  const ly = height / 2;
-  const dx = lx * COS_M45 - ly * SIN_M45;
-  const dy = lx * SIN_M45 + ly * COS_M45;
-  return { cx: vx - dx, cy: vy - dy };
+/** RTL on VL (x=0) and RBL on VB (y=H); see spec (45°/45°/90° corner with hypotenuse = h). */
+function centerFromRtlVlRblVb(w: number, h: number, W: number, H: number): { cx: number; cy: number } {
+  const cx = (w * COS_M45) / 2 - (h * SIN_M45) / 2;
+  const cy = H + (w * SIN_M45) / 2 - (h * COS_M45) / 2;
+  return { cx, cy };
 }
 
-function minUPlusVVerticalEdgeMids(
-  cx: number,
-  cy: number,
-  w: number,
-  H: number
-): { left: number; right: number; min: number } {
-  const sL = localMidToScreen(cx, cy, -w / 2, 0);
-  const sR = localMidToScreen(cx, cy, w / 2, 0);
-  const sumL = sL.x + (H - sL.y);
-  const sumR = sR.x + (H - sR.y);
-  return { left: sumL, right: sumR, min: Math.min(sumL, sumR) };
+/** RBL constrained to bottom edge: (xb, H). BL local (-w/2, h/2). */
+function centerFromRblOnVB(xb: number, w: number, h: number, H: number): { cx: number; cy: number } {
+  const cx = xb + (w * COS_M45) / 2 + (h * SIN_M45) / 2;
+  const cy = H + (w * SIN_M45) / 2 - (h * COS_M45) / 2;
+  return { cx, cy };
 }
 
-/** Self-consistent h ≈ min(u+v) for vertical edge mids with pinned center (fixed-point). */
-function solveHeightFromEdgeMidLines(
-  tt: number,
+/** RTR constrained to top edge (VT): sy = 0. TR local (w/2, -h/2). */
+function centerFromRtrOnVT(sxTr: number, w: number, h: number): { cx: number; cy: number } {
+  const cy = (-w * SIN_M45) / 2 + (h * COS_M45) / 2;
+  const cx = sxTr - (w * COS_M45) / 2 - (h * SIN_M45) / 2;
+  return { cx, cy };
+}
+
+/** RTL constrained to left edge (VL): sx = 0. TL local (-w/2, -h/2). */
+function centerFromRtlOnVL(syTl: number, w: number, h: number): { cx: number; cy: number } {
+  const cx = (w * COS_M45) / 2 - (h * SIN_M45) / 2;
+  const cy = syTl + (w * SIN_M45) / 2 + (h * COS_M45) / 2;
+  return { cx, cy };
+}
+
+/** RBR constrained to top edge (VT): sy = 0. BR local (w/2, h/2). */
+function centerFromRbrOnVT(sxBr: number, w: number, h: number): { cx: number; cy: number } {
+  const cy = (-w * SIN_M45) / 2 - (h * COS_M45) / 2;
+  const cx = sxBr - (w * COS_M45) / 2 + (h * SIN_M45) / 2;
+  return { cx, cy };
+}
+
+function maxHeightBinarySearch(
+  hMin: number,
+  hMax: number,
+  fits: (h: number) => boolean
+): number {
+  if (hMax < hMin - 1e-9) return hMin;
+  if (!fits(hMin)) return hMin;
+  let lo = hMin;
+  let hi = hMax;
+  for (let i = 0; i < 44; i++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function maxHeightRblOnVB(
+  xb: number,
   w: number,
   W: number,
   H: number,
   hMin: number,
   hMax: number
 ): number {
-  let h = Math.max(hMin, Math.min(hMax, (hMin + hMax) / 2));
-  for (let i = 0; i < 52; i++) {
-    const { cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, h, W, H);
-    const m = minUPlusVVerticalEdgeMids(cx, cy, w, H).min;
-    const hNew = Math.max(hMin, Math.min(hMax, m));
-    if (Math.abs(hNew - h) < 0.015) {
-      return hNew;
-    }
-    h = 0.55 * h + 0.45 * hNew;
+  return maxHeightBinarySearch(hMin, hMax, (hh) => {
+    const { cx, cy } = centerFromRblOnVB(xb, w, hh, H);
+    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
+  });
+}
+
+function maxHeightRtrOnVT(
+  sxTr: number,
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number
+): number {
+  return maxHeightBinarySearch(hMin, hMax, (hh) => {
+    const { cx, cy } = centerFromRtrOnVT(sxTr, w, hh);
+    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
+  });
+}
+
+function maxHeightRtlOnVL(
+  syTl: number,
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number
+): number {
+  return maxHeightBinarySearch(hMin, hMax, (hh) => {
+    const { cx, cy } = centerFromRtlOnVL(syTl, w, hh);
+    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
+  });
+}
+
+function maxHeightRbrOnVT(
+  sxBr: number,
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number
+): number {
+  return maxHeightBinarySearch(hMin, hMax, (hh) => {
+    const { cx, cy } = centerFromRbrOnVT(sxBr, w, hh);
+    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
+  });
+}
+
+function distCenterToVbl(cx: number, cy: number, H: number): number {
+  return Math.hypot(cx - 0, cy - H);
+}
+
+function distCenterToVtr(cx: number, cy: number, W: number): number {
+  return Math.hypot(cx - W, cy - 0);
+}
+
+/**
+ * Find u ∈ [0,100] (normalized x on VT) so that with RTR on VT and max height,
+ * distance(center, VTR) is closest to targetDist (distance from start center to VBL).
+ */
+function solveUtrForSymmetricEnd(
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number,
+  targetDist: number
+): { u: number; cx: number; cy: number; h: number } | null {
+  let best: { u: number; cx: number; cy: number; h: number; err: number } | null = null;
+  for (let s = 0; s <= 100; s += 0.05) {
+    const sxTr = (s / 100) * W;
+    const hh = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
+    const { cx, cy } = centerFromRtrOnVT(sxTr, w, hh);
+    const err = Math.abs(distCenterToVtr(cx, cy, W) - targetDist);
+    if (!best || err < best.err) best = { u: s, cx, cy, h: hh, err };
   }
-  return Math.max(hMin, Math.min(hMax, h));
+  return best;
+}
+
+function solveUbrForSymmetricEnd(
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number,
+  targetDist: number
+): { u: number; cx: number; cy: number; h: number } | null {
+  let best: { u: number; cx: number; cy: number; h: number; err: number } | null = null;
+  for (let s = 0; s <= 100; s += 0.05) {
+    const sxBr = (s / 100) * W;
+    const hh = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
+    const { cx, cy } = centerFromRbrOnVT(sxBr, w, hh);
+    const err = Math.abs(distCenterToVtr(cx, cy, W) - targetDist);
+    if (!best || err < best.err) best = { u: s, cx, cy, h: hh, err };
+  }
+  return best;
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function geometryWidthMajor(
+  tt: number,
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number
+): { cx: number; cy: number; h: number } {
+  const { cx: cx0, cy: cy0 } = centerFromRtlVlRblVb(w, hMin, W, H);
+  const d0 = distCenterToVbl(cx0, cy0, H);
+  const xBl0 =
+    cx0 + (-w / 2) * COS_M45 - (hMin / 2) * SIN_M45;
+  const uBl0 = (100 * xBl0) / W;
+  const uDelta = 50 - uBl0;
+  const end = solveUtrForSymmetricEnd(w, W, H, hMin, hMax, d0);
+
+  const uBl1 = 50;
+  const sxTrPhase1End = (() => {
+    const xb = (uBl1 / 100) * W;
+    const h1 = maxHeightRblOnVB(xb, w, W, H, hMin, hMax);
+    const { cx, cy } = centerFromRblOnVB(xb, w, h1, H);
+    const sxTr =
+      cx + (w / 2) * COS_M45 - (-h1 / 2) * SIN_M45;
+    return sxTr;
+  })();
+  const uTr1 = (100 * sxTrPhase1End) / W;
+
+  if (!end) {
+    const { cx, cy } = centerFromRtlVlRblVb(w, hMin, W, H);
+    return { cx, cy, h: hMin };
+  }
+
+  const uTrEnd = end.u;
+  const phaseFrac = 1 / 3;
+  if (tt < phaseFrac) {
+    const p = tt / phaseFrac;
+    const uBl = lerp(uBl0, uBl1, p);
+    const xb = (uBl / 100) * W;
+    const h = maxHeightRblOnVB(xb, w, W, H, hMin, hMax);
+    return { ...centerFromRblOnVB(xb, w, h, H), h };
+  }
+  if (tt < 2 * phaseFrac) {
+    const p = (tt - phaseFrac) / phaseFrac;
+    const uTr = lerp(uTr1, uTr1 + uDelta, p);
+    const sxTr = (uTr / 100) * W;
+    const h = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
+    return { ...centerFromRtrOnVT(sxTr, w, h), h };
+  }
+  const p = (tt - 2 * phaseFrac) / phaseFrac;
+  const uTr = lerp(uTr1 + uDelta, uTrEnd, p);
+  const sxTr = (uTr / 100) * W;
+  const h = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
+  return { ...centerFromRtrOnVT(sxTr, w, h), h };
+}
+
+function geometryHeightMajor(
+  tt: number,
+  w: number,
+  W: number,
+  H: number,
+  hMin: number,
+  hMax: number
+): { cx: number; cy: number; h: number } {
+  const { cx: cx0, cy: cy0 } = centerFromRtlVlRblVb(w, hMin, W, H);
+  const d0 = distCenterToVbl(cx0, cy0, H);
+  const syTl0 =
+    cy0 + (-w / 2) * SIN_M45 + (-hMin / 2) * COS_M45;
+  const vRtl0 = (100 * (H - syTl0)) / H;
+  const vDelta = 50 - vRtl0;
+  const end = solveUbrForSymmetricEnd(w, W, H, hMin, hMax, d0);
+
+  const vRtl1 = 50;
+  const syTl1 = H * (1 - vRtl1 / 100);
+  const sxBrPhase1End = (() => {
+    const h1 = maxHeightRtlOnVL(syTl1, w, W, H, hMin, hMax);
+    const { cx, cy } = centerFromRtlOnVL(syTl1, w, h1);
+    const sxBr =
+      cx + (w / 2) * COS_M45 - (h1 / 2) * SIN_M45;
+    return sxBr;
+  })();
+  const uBr1 = (100 * sxBrPhase1End) / W;
+
+  if (!end) {
+    const { cx, cy } = centerFromRtlVlRblVb(w, hMin, W, H);
+    return { cx, cy, h: hMin };
+  }
+
+  const uBrEnd = end.u;
+  const phaseFrac = 1 / 3;
+  if (tt < phaseFrac) {
+    const p = tt / phaseFrac;
+    const vRtl = lerp(vRtl0, vRtl1, p);
+    const syTl = H * (1 - vRtl / 100);
+    const h = maxHeightRtlOnVL(syTl, w, W, H, hMin, hMax);
+    return { ...centerFromRtlOnVL(syTl, w, h), h };
+  }
+  if (tt < 2 * phaseFrac) {
+    const p = (tt - phaseFrac) / phaseFrac;
+    const uBr = lerp(uBr1, uBr1 + vDelta, p);
+    const sxBr = (uBr / 100) * W;
+    const h = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
+    return { ...centerFromRbrOnVT(sxBr, w, h), h };
+  }
+  const p = (tt - 2 * phaseFrac) / phaseFrac;
+  const uBr = lerp(uBr1 + vDelta, uBrEnd, p);
+  const sxBr = (uBr / 100) * W;
+  const h = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
+  return { ...centerFromRbrOnVT(sxBr, w, h), h };
 }
 
 export type GeometryDebugSnapshot = {
@@ -124,37 +341,20 @@ export type GeometryDebugSnapshot = {
   viewport: { W: number; H: number };
   /** Unrotated width (px) */
   w: number;
-  /** Legacy closed form (old AABB path); for comparison only */
-  hRawFromRidingLineFormula: number;
-  /** Pinned vertex target in screen space: (t·W, (1−t)·H) */
-  pinnedVertexTargetScreen: { x: number; y: number };
+  /** Major axis: width vs height */
+  widthMajor: boolean;
+  /** Distance center → VBL at start (px) */
+  distCenterToVblStart: number;
+  /** Distance center → VTR at current frame (px) */
+  distCenterToVtr: number;
   hMin: number;
   hCap: number;
-  hAfterMinMaxClamp: number;
   /** Whether rotated bounds fit the viewport after all clamps */
   fitsViewportFinal: boolean;
-  /** Set when we shrink h to fit the viewport */
-  hFromMaxHeightFitOnly: number | null;
   hFinal: number;
   L: number;
   centerScreen: { cx: number; cy: number };
   boundsScreen: { minX: number; maxX: number; minY: number; maxY: number };
-  /** Bottom-left origin, y up: u = x_screen, v = H − y_screen */
-  leftVerticalEdgeMid: {
-    local: { x: number; y: number };
-    screen: { x: number; y: number };
-    user: { u: number; v: number };
-    uPlusV: number;
-  };
-  rightVerticalEdgeMid: {
-    local: { x: number; y: number };
-    screen: { x: number; y: number };
-    user: { u: number; v: number };
-    uPlusV: number;
-  };
-  minUPlusV: number;
-  /** min(u+v) − hFinal; should be ~0 if construction matches */
-  deltaMinUPlusVMinusH: number;
   notes: string[];
 };
 
@@ -163,118 +363,60 @@ function buildGeometryDebugSnapshot(
   w: number,
   W: number,
   H: number,
-  cfg: Config
+  cfg: Config,
+  minRectHeightPx: number
 ): GeometryDebugSnapshot {
   const t = Math.min(1, Math.max(0, tt));
-  const hMin = oneLineBoxHeightPx(cfg);
-  const hCap = cfg.maxHeightFraction * Math.min(W, H);
-  const hRaw = heightFromRidingLineConstruction(t, w, W, H);
-  const hAfterClamp = Math.max(hMin, Math.min(hRaw, hCap));
-  const pinnedVertexTargetScreen = { x: t * W, y: H * (1 - t) };
+  const hMin = Math.max(minRectHeightPx, oneLineBoxHeightPx(cfg));
+  const hCap = hCapPx(cfg, W, H);
+  const widthMajor = W >= H;
 
   if (w <= 1e-9) {
     return {
       t,
       viewport: { W, H },
       w,
-      hRawFromRidingLineFormula: hRaw,
-      pinnedVertexTargetScreen,
+      widthMajor,
+      distCenterToVblStart: 0,
+      distCenterToVtr: 0,
       hMin,
       hCap,
-      hAfterMinMaxClamp: hAfterClamp,
       fitsViewportFinal: true,
-      hFromMaxHeightFitOnly: null,
       hFinal: 0,
       L: 0,
       centerScreen: { cx: 0, cy: H },
       boundsScreen: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
-      leftVerticalEdgeMid: {
-        local: { x: 0, y: 0 },
-        screen: { x: 0, y: 0 },
-        user: { u: 0, v: 0 },
-        uPlusV: 0,
-      },
-      rightVerticalEdgeMid: {
-        local: { x: 0, y: 0 },
-        screen: { x: 0, y: 0 },
-        user: { u: 0, v: 0 },
-        uPlusV: 0,
-      },
-      minUPlusV: 0,
-      deltaMinUPlusVMinusH: 0,
       notes: [],
     };
   }
 
-  const hSolveUnclamped = solveHeightFromEdgeMidLines(t, w, W, H, hMin, hCap);
-  const { cx: cxTry, cy: cyTry } = centerFromPinnedBottomLeftVertex(
-    t,
-    w,
-    hSolveUnclamped,
-    W,
-    H
-  );
-  const wouldOverflow = !fitsViewport(
-    boundsRotated(cxTry, cyTry, w, hSolveUnclamped),
-    W,
-    H,
-    0.25
-  );
-  const hFit = wouldOverflow ? maxHeightFitOnly(t, w, W, H, cfg) : null;
-  const notes: string[] = [];
-  if (wouldOverflow) {
-    notes.push("Pinned solve overflowed viewport; h reduced via maxHeightFitOnly.");
-  }
+  const { cx: c0, cy: c0y } = centerFromRtlVlRblVb(w, hMin, W, H);
+  const distStart = distCenterToVbl(c0, c0y, H);
 
-  const { cx, cy, h } = geometryForFrame(tt, w, W, H, cfg);
+  const { cx, cy, h } = geometryForFrame(tt, w, W, H, cfg, minRectHeightPx);
   const b = boundsRotated(cx, cy, w, h);
   const fits = fitsViewport(b, W, H, 0.25);
+  const notes: string[] = [];
   if (!fits) {
     notes.push("Unexpected: geometryForFrame still outside viewport.");
   }
 
   const L = (w + h) / Math.SQRT2;
-  const ll = { x: -w / 2, y: 0 };
-  const lr = { x: w / 2, y: 0 };
-  const sL = localMidToScreen(cx, cy, ll.x, ll.y);
-  const sR = localMidToScreen(cx, cy, lr.x, lr.y);
-  const uL = sL.x;
-  const vL = H - sL.y;
-  const uR = sR.x;
-  const vR = H - sR.y;
-  const sumL = uL + vL;
-  const sumR = uR + vR;
-  const minUPlusV = Math.min(sumL, sumR);
 
   return {
     t,
     viewport: { W, H },
     w,
-    hRawFromRidingLineFormula: hRaw,
-    pinnedVertexTargetScreen,
+    widthMajor,
+    distCenterToVblStart: distStart,
+    distCenterToVtr: distCenterToVtr(cx, cy, W),
     hMin,
     hCap,
-    hAfterMinMaxClamp: hAfterClamp,
     fitsViewportFinal: fits,
-    hFromMaxHeightFitOnly: hFit,
     hFinal: h,
     L,
     centerScreen: { cx, cy },
     boundsScreen: b,
-    leftVerticalEdgeMid: {
-      local: ll,
-      screen: sL,
-      user: { u: uL, v: vL },
-      uPlusV: sumL,
-    },
-    rightVerticalEdgeMid: {
-      local: lr,
-      screen: sR,
-      user: { u: uR, v: vR },
-      uPlusV: sumR,
-    },
-    minUPlusV,
-    deltaMinUPlusVMinusH: minUPlusV - h,
     notes,
   };
 }
@@ -282,15 +424,11 @@ function buildGeometryDebugSnapshot(
 function formatDebugOverlay(s: GeometryDebugSnapshot): string {
   const lines = [
     `t=${s.t.toFixed(4)}  viewport ${s.viewport.W}×${s.viewport.H}  w=${s.w.toFixed(2)}`,
-    `pinned vertex screen (${s.pinnedVertexTargetScreen.x.toFixed(1)}, ${s.pinnedVertexTargetScreen.y.toFixed(1)})`,
-    `legacy AABB formula h=${s.hRawFromRidingLineFormula.toFixed(2)}  hMin=${s.hMin}  hCap=${s.hCap.toFixed(2)}`,
-    `h after legacy clamp=${s.hAfterMinMaxClamp.toFixed(2)}  hFinal=${s.hFinal.toFixed(2)}`,
-    `fitsViewport=${s.fitsViewportFinal}  hFitOnly=${s.hFromMaxHeightFitOnly ?? "—"}`,
+    `major=${s.widthMajor ? "width" : "height"}  hMin=${s.hMin.toFixed(2)}  hCap=${s.hCap.toFixed(2)}  hFinal=${s.hFinal.toFixed(2)}`,
+    `dist(center,VBL)@start=${s.distCenterToVblStart.toFixed(2)}  dist(center,VTR)=${s.distCenterToVtr.toFixed(2)}`,
+    `fitsViewport=${s.fitsViewportFinal}`,
     `L=(w+h)/√2=${s.L.toFixed(2)}  center (${s.centerScreen.cx.toFixed(2)}, ${s.centerScreen.cy.toFixed(2)})`,
     `bounds screen [${s.boundsScreen.minX.toFixed(1)}, ${s.boundsScreen.maxX.toFixed(1)}] × [${s.boundsScreen.minY.toFixed(1)}, ${s.boundsScreen.maxY.toFixed(1)}]`,
-    `left mid  user u+v=${s.leftVerticalEdgeMid.uPlusV.toFixed(2)}  (u=${s.leftVerticalEdgeMid.user.u.toFixed(2)}, v=${s.leftVerticalEdgeMid.user.v.toFixed(2)})`,
-    `right mid user u+v=${s.rightVerticalEdgeMid.uPlusV.toFixed(2)}  (u=${s.rightVerticalEdgeMid.user.u.toFixed(2)}, v=${s.rightVerticalEdgeMid.user.v.toFixed(2)})`,
-    `min(u+v)=${s.minUPlusV.toFixed(2)}  Δ(min−hFinal)=${s.deltaMinUPlusVMinusH.toFixed(4)}`,
     ...s.notes.map((n) => `→ ${n}`),
   ];
   return lines.join("\n");
@@ -447,54 +585,16 @@ function oneLineBoxHeightPx(cfg: Config): number {
 }
 
 /**
- * Old AABB-path closed form (debug comparison only): assumed L = (w+h)/√2 center path.
- */
-function heightFromRidingLineConstruction(tt: number, w: number, W: number, H: number): number {
-  const t = Math.min(1, Math.max(0, tt));
-  const denom = Math.SQRT2 - 1 + 2 * t;
-  if (denom <= 1e-12) return 0;
-  const num = t * ((W + H) * Math.SQRT2 - 2 * w);
-  return Math.max(0, num / denom);
-}
-
-/** Largest height that fits in the viewport with pinned bottom-left vertex centering. */
-function maxHeightFitOnly(
-  t: number,
-  w: number,
-  W: number,
-  H: number,
-  cfg: Config
-): number {
-  const tt = Math.min(1, Math.max(0, t));
-  const hCap = cfg.maxHeightFraction * Math.min(W, H);
-  const hSearchMax = Math.min(2 * (W + H), hCap);
-
-  const boundsForHeight = (height: number) => {
-    const { cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, height, W, H);
-    return boundsRotated(cx, cy, w, height);
-  };
-
-  let lo = 0;
-  let hi = hSearchMax;
-  for (let k = 0; k < 38; k++) {
-    const mid = (lo + hi) / 2;
-    const b = boundsForHeight(mid);
-    if (fitsViewport(b, W, H, 0.25)) lo = mid;
-    else hi = mid;
-  }
-  return lo;
-}
-
-/**
- * Fixed width `w`, rotated -45°. Center pins local bottom-left corner to viewport diagonal (tW, (1−t)H).
- * Height solves h ≈ min(u+v) for left/right vertical edge mids (user coords) via fixed-point iteration.
+ * Fixed width `w`, rotated -45°. Motion follows spec: VBL user origin, phases by major axis;
+ * height is the maximum that fits under each contact constraint until symmetric distance to VTR.
  */
 function geometryForFrame(
   t: number,
   w: number,
   W: number,
   H: number,
-  cfg: Config
+  cfg: Config,
+  minRectHeightPx: number
 ): { cx: number; cy: number; h: number } {
   const tt = Math.min(1, Math.max(0, t));
 
@@ -502,19 +602,13 @@ function geometryForFrame(
     return { cx: 0, cy: H, h: 0 };
   }
 
-  const hMin = oneLineBoxHeightPx(cfg);
-  const hCap = cfg.maxHeightFraction * Math.min(W, H);
+  const hMin = Math.max(minRectHeightPx, oneLineBoxHeightPx(cfg));
+  const hCap = hCapPx(cfg, W, H);
 
-  let h = solveHeightFromEdgeMidLines(tt, w, W, H, hMin, hCap);
-  let { cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, h, W, H);
-
-  if (!fitsViewport(boundsRotated(cx, cy, w, h), W, H, 0.25)) {
-    const hFit = maxHeightFitOnly(tt, w, W, H, cfg);
-    h = Math.max(hMin, Math.min(h, hFit));
-    ({ cx, cy } = centerFromPinnedBottomLeftVertex(tt, w, h, W, H));
+  if (W >= H) {
+    return geometryWidthMajor(tt, w, W, H, hMin, hCap);
   }
-
-  return { cx, cy, h };
+  return geometryHeightMajor(tt, w, W, H, hMin, hCap);
 }
 
 function mount() {
@@ -630,10 +724,24 @@ function mount() {
     emPx,
     rootFontPx
   );
+  let minRectHeightPx = parseLengthWithViewport(
+    cfg.minRectHeight,
+    window.innerWidth,
+    window.innerHeight,
+    emPx,
+    rootFontPx
+  );
 
   const updateMetrics = () => {
     widthPx = parseLengthWithViewport(
       cfg.rectWidth,
+      window.innerWidth,
+      window.innerHeight,
+      emPx,
+      rootFontPx
+    );
+    minRectHeightPx = parseLengthWithViewport(
+      cfg.minRectHeight,
       window.innerWidth,
       window.innerHeight,
       emPx,
@@ -645,7 +753,7 @@ function mount() {
     const tt = Math.min(1, Math.max(0, t));
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const { cx, cy, h } = geometryForFrame(tt, widthPx, vw, vh, cfg);
+    const { cx, cy, h } = geometryForFrame(tt, widthPx, vw, vh, cfg, minRectHeightPx);
     const w = widthPx;
 
     rect.style.left = `${cx - w / 2}px`;
@@ -675,7 +783,7 @@ function mount() {
     textEl.textContent = joinSegments(cfg.script, fitCount);
 
     if (debugEnabled && debugPre) {
-      const snap = buildGeometryDebugSnapshot(tt, widthPx, vw, vh, cfg);
+      const snap = buildGeometryDebugSnapshot(tt, widthPx, vw, vh, cfg, minRectHeightPx);
       debugPre.textContent = formatDebugOverlay(snap);
       if (window.__ridingEdgesDebug) {
         window.__ridingEdgesDebug.last = snap;
