@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply m-0 min-h-[var(--scroll-doc-height,400vh)] bg-zinc-950 text-zinc-100;
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "riding-edges",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm",
+  "postCreateCommand": "corepack enable pnpm && pnpm install",
+  "forwardPorts": [5173],
+  "portsAttributes": {
+    "5173": {
+      "label": "static dev server",
+      "onAutoForward": "notify"
+    }
+  }
+}

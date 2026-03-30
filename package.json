@@ -1,0 +1,34 @@
+{
+  "name": "riding-edges",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm run build && concurrently -k \"pnpm run css:watch\" \"pnpm run js:watch\" \"pnpm run serve\"",
+    "build": "pnpm run css:build && pnpm run js:build && node scripts/copy-static.mjs",
+    "css:build": "postcss src/styles.css -o dist/styles.css",
+    "css:watch": "postcss src/styles.css -o dist/styles.css --watch",
+    "js:build": "esbuild src/main.ts --bundle --outfile=dist/app.js --format=esm --target=es2022",
+    "js:watch": "esbuild src/main.ts --bundle --outfile=dist/app.js --format=esm --target=es2022 --watch",
+    "serve": "serve dist -l 5173",
+    "preview": "pnpm run build && serve dist -l 5173"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "^0.0.3",
+    "gsap": "^3.12.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^22.10.0",
+    "concurrently": "^9.1.2",
+    "esbuild": "^0.25.0",
+    "postcss": "^8.5.0",
+    "postcss-cli": "^11.0.1",
+    "serve": "^14.2.4",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.7.3"
+  }
+}
