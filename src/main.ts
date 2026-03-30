@@ -28,7 +28,10 @@ export const animationConfig = {
    * Initial placement at VBL uses this as the hypotenuse of the 45°/45°/90° corner triangle (see spec).
    */
   minRectHeight: "10vmin",
-  /** Upper bound on solved height: fraction of min(viewport width, height). */
+  /**
+   * Scales the upper bound used when binary-searching local height `h` (unrotated box height).
+   * The bound is derived from fitting the rotated AABB `(w+h)/√2` in the viewport — not `min(vw,vh)`.
+   */
   maxHeightFraction: 1,
   /** Scroll distance (px) that corresponds to a 1% change in normalized scroll progress (see body height). */
   scrollPixelsPerPercent: 12,
@@ -59,8 +62,14 @@ function isDebugEnabled(cfg: Config): boolean {
   }
 }
 
-function hCapPx(cfg: Config, W: number, H: number): number {
-  return cfg.maxHeightFraction * Math.min(W, H);
+/**
+ * Upper bound for binary search on local height `h` (unrotated RH).
+ * Rotated -45° AABB height is (w+h)/√2; it must fit in min(W,H), so h ≤ min(W,H)·√2 − w.
+ * We add slack so `fitsViewport` is the real limit, not this ceiling.
+ */
+function hSearchMaxPx(cfg: Config, w: number, W: number, H: number): number {
+  const m = Math.min(W, H);
+  return cfg.maxHeightFraction * (m * Math.SQRT2 + Math.max(w, 0) + 2);
 }
 
 /** RTL on VL (x=0) and RBL on VB (y=H); see spec (45°/45°/90° corner with hypotenuse = h). */
@@ -241,16 +250,13 @@ function geometryWidthMajor(
   const uDelta = 50 - uBl0;
   const end = solveUtrForSymmetricEnd(w, W, H, hMin, hMax, d0);
 
-  const uBl1 = 50;
-  const sxTrPhase1End = (() => {
-    const xb = (uBl1 / 100) * W;
-    const h1 = maxHeightRblOnVB(xb, w, W, H, hMin, hMax);
-    const { cx, cy } = centerFromRblOnVB(xb, w, h1, H);
-    const sxTr =
-      cx + (w / 2) * COS_M45 - (-h1 / 2) * SIN_M45;
-    return sxTr;
-  })();
-  const uTr1 = (100 * sxTrPhase1End) / W;
+  /** RBL at user (50, 0): end of VB-only phase; phase 2 RTR motion starts from this exact pose. */
+  const xbEnd = (50 / 100) * W;
+  const hBlEnd = maxHeightRblOnVB(xbEnd, w, W, H, hMin, hMax);
+  const cBlEnd = centerFromRblOnVB(xbEnd, w, hBlEnd, H);
+  const sxTr0 =
+    cBlEnd.cx + (w / 2) * COS_M45 - (-hBlEnd / 2) * SIN_M45;
+  const uTr0 = (100 * sxTr0) / W;
 
   if (!end) {
     const { cx, cy } = centerFromRtlVlRblVb(w, hMin, W, H);
@@ -261,20 +267,23 @@ function geometryWidthMajor(
   const phaseFrac = 1 / 3;
   if (tt < phaseFrac) {
     const p = tt / phaseFrac;
-    const uBl = lerp(uBl0, uBl1, p);
+    const uBl = lerp(uBl0, 50, p);
     const xb = (uBl / 100) * W;
     const h = maxHeightRblOnVB(xb, w, W, H, hMin, hMax);
     return { ...centerFromRblOnVB(xb, w, h, H), h };
   }
   if (tt < 2 * phaseFrac) {
     const p = (tt - phaseFrac) / phaseFrac;
-    const uTr = lerp(uTr1, uTr1 + uDelta, p);
+    if (p <= 1e-9) {
+      return { ...cBlEnd, h: hBlEnd };
+    }
+    const uTr = lerp(uTr0, uTr0 + uDelta, p);
     const sxTr = (uTr / 100) * W;
     const h = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
     return { ...centerFromRtrOnVT(sxTr, w, h), h };
   }
   const p = (tt - 2 * phaseFrac) / phaseFrac;
-  const uTr = lerp(uTr1 + uDelta, uTrEnd, p);
+  const uTr = lerp(uTr0 + uDelta, uTrEnd, p);
   const sxTr = (uTr / 100) * W;
   const h = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
   return { ...centerFromRtrOnVT(sxTr, w, h), h };
@@ -298,14 +307,11 @@ function geometryHeightMajor(
 
   const vRtl1 = 50;
   const syTl1 = H * (1 - vRtl1 / 100);
-  const sxBrPhase1End = (() => {
-    const h1 = maxHeightRtlOnVL(syTl1, w, W, H, hMin, hMax);
-    const { cx, cy } = centerFromRtlOnVL(syTl1, w, h1);
-    const sxBr =
-      cx + (w / 2) * COS_M45 - (h1 / 2) * SIN_M45;
-    return sxBr;
-  })();
-  const uBr1 = (100 * sxBrPhase1End) / W;
+  const hRtlEnd = maxHeightRtlOnVL(syTl1, w, W, H, hMin, hMax);
+  const cRtlEnd = centerFromRtlOnVL(syTl1, w, hRtlEnd);
+  const sxBr0 =
+    cRtlEnd.cx + (w / 2) * COS_M45 - (hRtlEnd / 2) * SIN_M45;
+  const uBr0 = (100 * sxBr0) / W;
 
   if (!end) {
     const { cx, cy } = centerFromRtlVlRblVb(w, hMin, W, H);
@@ -323,13 +329,16 @@ function geometryHeightMajor(
   }
   if (tt < 2 * phaseFrac) {
     const p = (tt - phaseFrac) / phaseFrac;
-    const uBr = lerp(uBr1, uBr1 + vDelta, p);
+    if (p <= 1e-9) {
+      return { ...cRtlEnd, h: hRtlEnd };
+    }
+    const uBr = lerp(uBr0, uBr0 + vDelta, p);
     const sxBr = (uBr / 100) * W;
     const h = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
     return { ...centerFromRbrOnVT(sxBr, w, h), h };
   }
   const p = (tt - 2 * phaseFrac) / phaseFrac;
-  const uBr = lerp(uBr1 + vDelta, uBrEnd, p);
+  const uBr = lerp(uBr0 + vDelta, uBrEnd, p);
   const sxBr = (uBr / 100) * W;
   const h = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
   return { ...centerFromRbrOnVT(sxBr, w, h), h };
@@ -348,7 +357,8 @@ export type GeometryDebugSnapshot = {
   /** Distance center → VTR at current frame (px) */
   distCenterToVtr: number;
   hMin: number;
-  hCap: number;
+  /** Upper bound used for binary search on local height (not the solved height). */
+  hSearchMax: number;
   /** Whether rotated bounds fit the viewport after all clamps */
   fitsViewportFinal: boolean;
   hFinal: number;
@@ -368,7 +378,7 @@ function buildGeometryDebugSnapshot(
 ): GeometryDebugSnapshot {
   const t = Math.min(1, Math.max(0, tt));
   const hMin = Math.max(minRectHeightPx, oneLineBoxHeightPx(cfg));
-  const hCap = hCapPx(cfg, W, H);
+  const hSearchMax = hSearchMaxPx(cfg, w, W, H);
   const widthMajor = W >= H;
 
   if (w <= 1e-9) {
@@ -380,7 +390,7 @@ function buildGeometryDebugSnapshot(
       distCenterToVblStart: 0,
       distCenterToVtr: 0,
       hMin,
-      hCap,
+      hSearchMax,
       fitsViewportFinal: true,
       hFinal: 0,
       L: 0,
@@ -411,7 +421,7 @@ function buildGeometryDebugSnapshot(
     distCenterToVblStart: distStart,
     distCenterToVtr: distCenterToVtr(cx, cy, W),
     hMin,
-    hCap,
+    hSearchMax,
     fitsViewportFinal: fits,
     hFinal: h,
     L,
@@ -424,7 +434,7 @@ function buildGeometryDebugSnapshot(
 function formatDebugOverlay(s: GeometryDebugSnapshot): string {
   const lines = [
     `t=${s.t.toFixed(4)}  viewport ${s.viewport.W}×${s.viewport.H}  w=${s.w.toFixed(2)}`,
-    `major=${s.widthMajor ? "width" : "height"}  hMin=${s.hMin.toFixed(2)}  hCap=${s.hCap.toFixed(2)}  hFinal=${s.hFinal.toFixed(2)}`,
+    `major=${s.widthMajor ? "width" : "height"}  hMin=${s.hMin.toFixed(2)}  hSearchMax=${s.hSearchMax.toFixed(2)}  hFinal=${s.hFinal.toFixed(2)}`,
     `dist(center,VBL)@start=${s.distCenterToVblStart.toFixed(2)}  dist(center,VTR)=${s.distCenterToVtr.toFixed(2)}`,
     `fitsViewport=${s.fitsViewportFinal}`,
     `L=(w+h)/√2=${s.L.toFixed(2)}  center (${s.centerScreen.cx.toFixed(2)}, ${s.centerScreen.cy.toFixed(2)})`,
@@ -603,12 +613,12 @@ function geometryForFrame(
   }
 
   const hMin = Math.max(minRectHeightPx, oneLineBoxHeightPx(cfg));
-  const hCap = hCapPx(cfg, W, H);
+  const hSearchMax = hSearchMaxPx(cfg, w, W, H);
 
   if (W >= H) {
-    return geometryWidthMajor(tt, w, W, H, hMin, hCap);
+    return geometryWidthMajor(tt, w, W, H, hMin, hSearchMax);
   }
-  return geometryHeightMajor(tt, w, W, H, hMin, hCap);
+  return geometryHeightMajor(tt, w, W, H, hMin, hSearchMax);
 }
 
 function mount() {
