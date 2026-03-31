@@ -79,14 +79,10 @@ function mount() {
     const innerH = Math.max(0, h - pad * 2);
     textEl.style.padding = `${pad}px`;
 
-    // Unlock one more segment per scroll phase, then clamp to what actually fits.
-    // Start at 1 so the first segment is visible before any scrolling.
-    const desiredCount = Math.max(1, Math.min(
-      segments.length,
-      Math.ceil(tt * segments.length - 1e-9)
-    ));
+    // Show as many segments as fit in the current box — the box growing through
+    // scroll is what naturally reveals more text.
     const fitCount = maxFittingSegmentCount(
-      segments, innerW, innerH, cfg.pretextFont, cfg.lineHeightPx, desiredCount
+      segments, innerW, innerH, cfg.pretextFont, cfg.lineHeightPx, segments.length
     );
     textEl.textContent = joinSegments(segments, fitCount);
 
