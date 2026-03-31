@@ -62,286 +62,16 @@ function isDebugEnabled(cfg: Config): boolean {
   }
 }
 
-/**
- * Upper bound for binary search on local height `h` (unrotated RH).
- * Rotated -45° AABB height is (w+h)/√2; it must fit in min(W,H), so h ≤ min(W,H)·√2 − w.
- * We add slack so `fitsViewport` is the real limit, not this ceiling.
- */
-function hSearchMaxPx(cfg: Config, w: number, W: number, H: number): number {
-  const m = Math.min(W, H);
-  return cfg.maxHeightFraction * (m * Math.SQRT2 + Math.max(w, 0) + 2);
-}
-
-/** RTL on VL (x=0) and RBL on VB (y=H); see spec (45°/45°/90° corner with hypotenuse = h). */
-function centerFromRtlVlRblVb(w: number, h: number, W: number, H: number): { cx: number; cy: number } {
-  const cx = (w * COS_M45) / 2 - (h * SIN_M45) / 2;
-  const cy = H + (w * SIN_M45) / 2 - (h * COS_M45) / 2;
-  return { cx, cy };
-}
-
-/** RBL constrained to bottom edge: (xb, H). BL local (-w/2, h/2). */
-function centerFromRblOnVB(xb: number, w: number, h: number, H: number): { cx: number; cy: number } {
-  const cx = xb + (w * COS_M45) / 2 + (h * SIN_M45) / 2;
-  const cy = H + (w * SIN_M45) / 2 - (h * COS_M45) / 2;
-  return { cx, cy };
-}
-
-/** RTR constrained to top edge (VT): sy = 0. TR local (w/2, -h/2). */
-function centerFromRtrOnVT(sxTr: number, w: number, h: number): { cx: number; cy: number } {
-  const cy = (-w * SIN_M45) / 2 + (h * COS_M45) / 2;
-  const cx = sxTr - (w * COS_M45) / 2 - (h * SIN_M45) / 2;
-  return { cx, cy };
-}
-
-/** RTL constrained to left edge (VL): sx = 0. TL local (-w/2, -h/2). */
-function centerFromRtlOnVL(syTl: number, w: number, h: number): { cx: number; cy: number } {
-  const cx = (w * COS_M45) / 2 - (h * SIN_M45) / 2;
-  const cy = syTl + (w * SIN_M45) / 2 + (h * COS_M45) / 2;
-  return { cx, cy };
-}
-
-/** RBR constrained to top edge (VT): sy = 0. BR local (w/2, h/2). */
-function centerFromRbrOnVT(sxBr: number, w: number, h: number): { cx: number; cy: number } {
-  const cy = (-w * SIN_M45) / 2 - (h * COS_M45) / 2;
-  const cx = sxBr - (w * COS_M45) / 2 + (h * SIN_M45) / 2;
-  return { cx, cy };
-}
-
-function maxHeightBinarySearch(
-  hMin: number,
-  hMax: number,
-  fits: (h: number) => boolean
-): number {
-  if (hMax < hMin - 1e-9) return hMin;
-  if (!fits(hMin)) return hMin;
-  let lo = hMin;
-  let hi = hMax;
-  for (let i = 0; i < 44; i++) {
-    const mid = (lo + hi) / 2;
-    if (fits(mid)) lo = mid;
-    else hi = mid;
-  }
-  return lo;
-}
-
-function maxHeightRblOnVB(
-  xb: number,
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number
-): number {
-  return maxHeightBinarySearch(hMin, hMax, (hh) => {
-    const { cx, cy } = centerFromRblOnVB(xb, w, hh, H);
-    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
-  });
-}
-
-function maxHeightRtrOnVT(
-  sxTr: number,
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number
-): number {
-  return maxHeightBinarySearch(hMin, hMax, (hh) => {
-    const { cx, cy } = centerFromRtrOnVT(sxTr, w, hh);
-    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
-  });
-}
-
-function maxHeightRtlOnVL(
-  syTl: number,
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number
-): number {
-  return maxHeightBinarySearch(hMin, hMax, (hh) => {
-    const { cx, cy } = centerFromRtlOnVL(syTl, w, hh);
-    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
-  });
-}
-
-function maxHeightRbrOnVT(
-  sxBr: number,
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number
-): number {
-  return maxHeightBinarySearch(hMin, hMax, (hh) => {
-    const { cx, cy } = centerFromRbrOnVT(sxBr, w, hh);
-    return fitsViewport(boundsRotated(cx, cy, w, hh), W, H, 0.25);
-  });
-}
-
-function distCenterToVbl(cx: number, cy: number, H: number): number {
-  return Math.hypot(cx - 0, cy - H);
-}
-
-function distCenterToVtr(cx: number, cy: number, W: number): number {
-  return Math.hypot(cx - W, cy - 0);
-}
-
-/**
- * Find u ∈ [0,100] (normalized x on VT) so that with RTR on VT and max height,
- * distance(center, VTR) is closest to targetDist (distance from start center to VBL).
- */
-function solveUtrForSymmetricEnd(
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number,
-  targetDist: number
-): { u: number; cx: number; cy: number; h: number } | null {
-  let best: { u: number; cx: number; cy: number; h: number; err: number } | null = null;
-  for (let s = 0; s <= 100; s += 0.05) {
-    const sxTr = (s / 100) * W;
-    const hh = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
-    const { cx, cy } = centerFromRtrOnVT(sxTr, w, hh);
-    const err = Math.abs(distCenterToVtr(cx, cy, W) - targetDist);
-    if (!best || err < best.err) best = { u: s, cx, cy, h: hh, err };
-  }
-  return best;
-}
-
-function solveUbrForSymmetricEnd(
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number,
-  targetDist: number
-): { u: number; cx: number; cy: number; h: number } | null {
-  let best: { u: number; cx: number; cy: number; h: number; err: number } | null = null;
-  for (let s = 0; s <= 100; s += 0.05) {
-    const sxBr = (s / 100) * W;
-    const hh = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
-    const { cx, cy } = centerFromRbrOnVT(sxBr, w, hh);
-    const err = Math.abs(distCenterToVtr(cx, cy, W) - targetDist);
-    if (!best || err < best.err) best = { u: s, cx, cy, h: hh, err };
-  }
-  return best;
-}
-
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-function geometryWidthMajor(
-  tt: number,
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number
-): { cx: number; cy: number; h: number } {
-  const { cx: cx0, cy: cy0 } = centerFromRtlVlRblVb(w, hMin, W, H);
-  const d0 = distCenterToVbl(cx0, cy0, H);
-  const xBl0 =
-    cx0 + (-w / 2) * COS_M45 - (hMin / 2) * SIN_M45;
-  const uBl0 = (100 * xBl0) / W;
-  const uDelta = 50 - uBl0;
-  const end = solveUtrForSymmetricEnd(w, W, H, hMin, hMax, d0);
-
-  /** RBL at user (50, 0): end of VB-only phase; phase 2 RTR motion starts from this exact pose. */
-  const xbEnd = (50 / 100) * W;
-  const hBlEnd = maxHeightRblOnVB(xbEnd, w, W, H, hMin, hMax);
-  const cBlEnd = centerFromRblOnVB(xbEnd, w, hBlEnd, H);
-  const sxTr0 =
-    cBlEnd.cx + (w / 2) * COS_M45 - (-hBlEnd / 2) * SIN_M45;
-  const uTr0 = (100 * sxTr0) / W;
-
-  if (!end) {
-    const { cx, cy } = centerFromRtlVlRblVb(w, hMin, W, H);
-    return { cx, cy, h: hMin };
-  }
-
-  const uTrEnd = end.u;
-  const phaseFrac = 1 / 3;
-  if (tt < phaseFrac) {
-    const p = tt / phaseFrac;
-    const uBl = lerp(uBl0, 50, p);
-    const xb = (uBl / 100) * W;
-    const h = maxHeightRblOnVB(xb, w, W, H, hMin, hMax);
-    return { ...centerFromRblOnVB(xb, w, h, H), h };
-  }
-  if (tt < 2 * phaseFrac) {
-    const p = (tt - phaseFrac) / phaseFrac;
-    if (p <= 1e-9) {
-      return { ...cBlEnd, h: hBlEnd };
-    }
-    const uTr = lerp(uTr0, uTr0 + uDelta, p);
-    const sxTr = (uTr / 100) * W;
-    const h = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
-    return { ...centerFromRtrOnVT(sxTr, w, h), h };
-  }
-  const p = (tt - 2 * phaseFrac) / phaseFrac;
-  const uTr = lerp(uTr0 + uDelta, uTrEnd, p);
-  const sxTr = (uTr / 100) * W;
-  const h = maxHeightRtrOnVT(sxTr, w, W, H, hMin, hMax);
-  return { ...centerFromRtrOnVT(sxTr, w, h), h };
+function distCenterToVbl(cx: number, cy: number, H: number): number {
+  return Math.hypot(cx, cy - H);
 }
 
-function geometryHeightMajor(
-  tt: number,
-  w: number,
-  W: number,
-  H: number,
-  hMin: number,
-  hMax: number
-): { cx: number; cy: number; h: number } {
-  const { cx: cx0, cy: cy0 } = centerFromRtlVlRblVb(w, hMin, W, H);
-  const d0 = distCenterToVbl(cx0, cy0, H);
-  const syTl0 =
-    cy0 + (-w / 2) * SIN_M45 + (-hMin / 2) * COS_M45;
-  const vRtl0 = (100 * (H - syTl0)) / H;
-  const vDelta = 50 - vRtl0;
-  const end = solveUbrForSymmetricEnd(w, W, H, hMin, hMax, d0);
-
-  const vRtl1 = 50;
-  const syTl1 = H * (1 - vRtl1 / 100);
-  const hRtlEnd = maxHeightRtlOnVL(syTl1, w, W, H, hMin, hMax);
-  const cRtlEnd = centerFromRtlOnVL(syTl1, w, hRtlEnd);
-  const sxBr0 =
-    cRtlEnd.cx + (w / 2) * COS_M45 - (hRtlEnd / 2) * SIN_M45;
-  const uBr0 = (100 * sxBr0) / W;
-
-  if (!end) {
-    const { cx, cy } = centerFromRtlVlRblVb(w, hMin, W, H);
-    return { cx, cy, h: hMin };
-  }
-
-  const uBrEnd = end.u;
-  const phaseFrac = 1 / 3;
-  if (tt < phaseFrac) {
-    const p = tt / phaseFrac;
-    const vRtl = lerp(vRtl0, vRtl1, p);
-    const syTl = H * (1 - vRtl / 100);
-    const h = maxHeightRtlOnVL(syTl, w, W, H, hMin, hMax);
-    return { ...centerFromRtlOnVL(syTl, w, h), h };
-  }
-  if (tt < 2 * phaseFrac) {
-    const p = (tt - phaseFrac) / phaseFrac;
-    if (p <= 1e-9) {
-      return { ...cRtlEnd, h: hRtlEnd };
-    }
-    const uBr = lerp(uBr0, uBr0 + vDelta, p);
-    const sxBr = (uBr / 100) * W;
-    const h = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
-    return { ...centerFromRbrOnVT(sxBr, w, h), h };
-  }
-  const p = (tt - 2 * phaseFrac) / phaseFrac;
-  const uBr = lerp(uBr0 + vDelta, uBrEnd, p);
-  const sxBr = (uBr / 100) * W;
-  const h = maxHeightRbrOnVT(sxBr, w, W, H, hMin, hMax);
-  return { ...centerFromRbrOnVT(sxBr, w, h), h };
+function distCenterToVtr(cx: number, cy: number, W: number): number {
+  return Math.hypot(cx - W, cy);
 }
 
 export type GeometryDebugSnapshot = {
@@ -357,8 +87,6 @@ export type GeometryDebugSnapshot = {
   /** Distance center → VTR at current frame (px) */
   distCenterToVtr: number;
   hMin: number;
-  /** Upper bound used for binary search on local height (not the solved height). */
-  hSearchMax: number;
   /** Whether rotated bounds fit the viewport after all clamps */
   fitsViewportFinal: boolean;
   hFinal: number;
@@ -378,7 +106,6 @@ function buildGeometryDebugSnapshot(
 ): GeometryDebugSnapshot {
   const t = Math.min(1, Math.max(0, tt));
   const hMin = Math.max(minRectHeightPx, oneLineBoxHeightPx(cfg));
-  const hSearchMax = hSearchMaxPx(cfg, w, W, H);
   const widthMajor = W >= H;
 
   if (w <= 1e-9) {
@@ -390,7 +117,6 @@ function buildGeometryDebugSnapshot(
       distCenterToVblStart: 0,
       distCenterToVtr: 0,
       hMin,
-      hSearchMax,
       fitsViewportFinal: true,
       hFinal: 0,
       L: 0,
@@ -400,8 +126,9 @@ function buildGeometryDebugSnapshot(
     };
   }
 
-  const { cx: c0, cy: c0y } = centerFromRtlVlRblVb(w, hMin, W, H);
-  const distStart = distCenterToVbl(c0, c0y, H);
+  // Start position: k = (w + hMin) / (2√2), center at (k, H-k)
+  const k0 = (w + hMin) / (2 * Math.SQRT2);
+  const distStart = distCenterToVbl(k0, H - k0, H);
 
   const { cx, cy, h } = geometryForFrame(tt, w, W, H, cfg, minRectHeightPx);
   const b = boundsRotated(cx, cy, w, h);
@@ -421,7 +148,6 @@ function buildGeometryDebugSnapshot(
     distCenterToVblStart: distStart,
     distCenterToVtr: distCenterToVtr(cx, cy, W),
     hMin,
-    hSearchMax,
     fitsViewportFinal: fits,
     hFinal: h,
     L,
@@ -434,7 +160,7 @@ function buildGeometryDebugSnapshot(
 function formatDebugOverlay(s: GeometryDebugSnapshot): string {
   const lines = [
     `t=${s.t.toFixed(4)}  viewport ${s.viewport.W}×${s.viewport.H}  w=${s.w.toFixed(2)}`,
-    `major=${s.widthMajor ? "width" : "height"}  hMin=${s.hMin.toFixed(2)}  hSearchMax=${s.hSearchMax.toFixed(2)}  hFinal=${s.hFinal.toFixed(2)}`,
+    `major=${s.widthMajor ? "width" : "height"}  hMin=${s.hMin.toFixed(2)}  hFinal=${s.hFinal.toFixed(2)}`,
     `dist(center,VBL)@start=${s.distCenterToVblStart.toFixed(2)}  dist(center,VTR)=${s.distCenterToVtr.toFixed(2)}`,
     `fitsViewport=${s.fitsViewportFinal}`,
     `L=(w+h)/√2=${s.L.toFixed(2)}  center (${s.centerScreen.cx.toFixed(2)}, ${s.centerScreen.cy.toFixed(2)})`,
@@ -595,8 +321,15 @@ function oneLineBoxHeightPx(cfg: Config): number {
 }
 
 /**
- * Fixed width `w`, rotated -45°. Motion follows spec: VBL user origin, phases by major axis;
- * height is the maximum that fits under each contact constraint until symmetric distance to VTR.
+ * Three-phase animation, both orientations:
+ *
+ * Phase A (0..1/3): RTL on VL + RBL on VB — h grows from hMin to hSlide = D√2−w
+ * Phase B (1/3..2/3): h fixed at hSlide, center slides:
+ *   width-major  → RTR on VT + RBL on VB, cx slides left→right
+ *   height-major → RTL on VL + RBR on VR, cy slides down→up
+ * Phase C (2/3..1): RTR on VT + RBR on VR — h shrinks from hSlide back to hMin
+ *
+ * All transitions are continuous and analytic (no binary search needed).
  */
 function geometryForFrame(
   t: number,
@@ -613,12 +346,40 @@ function geometryForFrame(
   }
 
   const hMin = Math.max(minRectHeightPx, oneLineBoxHeightPx(cfg));
-  const hSearchMax = hSearchMaxPx(cfg, w, W, H);
+  // h during the slide phase: fills the shorter viewport dimension diagonally
+  const D = Math.min(W, H);
+  const hSlide = Math.max(hMin, D * Math.SQRT2 - w);
+  // (w + hSlide) / (2√2) = D/2 when hSlide = D√2 − w
+  const half = (w + hSlide) / (2 * Math.SQRT2);
 
-  if (W >= H) {
-    return geometryWidthMajor(tt, w, W, H, hMin, hSearchMax);
+  const phaseFrac = 1 / 3;
+
+  if (tt < phaseFrac) {
+    // Phase A: h grows; center moves along the VBL→center diagonal
+    const p = tt / phaseFrac;
+    const h = lerp(hMin, hSlide, p);
+    const k = (w + h) / (2 * Math.SQRT2);
+    return { cx: k, cy: H - k, h };
   }
-  return geometryHeightMajor(tt, w, W, H, hMin, hSearchMax);
+
+  if (tt < 2 * phaseFrac) {
+    // Phase B: h fixed, center slides across
+    const p = (tt - phaseFrac) / phaseFrac;
+    const h = hSlide;
+    if (W >= H) {
+      // RTR on VT + RBL on VB — cx slides, cy fixed at H/2
+      return { cx: lerp(half, W - half, p), cy: H - half, h };
+    } else {
+      // RTL on VL + RBR on VR — cy slides, cx fixed at W/2
+      return { cx: half, cy: lerp(H - half, half, p), h };
+    }
+  }
+
+  // Phase C: h shrinks; center moves along the center→VTR diagonal
+  const p = (tt - 2 * phaseFrac) / phaseFrac;
+  const h = lerp(hSlide, hMin, p);
+  const k = (w + h) / (2 * Math.SQRT2);
+  return { cx: W - k, cy: k, h };
 }
 
 function mount() {
