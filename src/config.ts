@@ -3,32 +3,47 @@
  * Changing a value here propagates to geometry, scroll range, and text layout
  * without touching any other file.
  */
-export const animationConfig = {
+export const animationConfig: {
   /**
-   * The copy shown inside the box, split into logical segments.
-   * Each scroll phase reveals one more segment; Pretext fits as many as
-   * physically possible given the current box height.
+   * The copy shown inside the box.
+   *
+   * - `string[]` — each element is one segment; scroll reveals them one at a time.
+   * - `string` — split on whitespace; each word becomes its own segment.
    */
-  script: [
-    "Scroll drives the shape.",
-    "Fixed width: height is one line of text at the ends and grows through the middle of the scroll.",
-    "Pretext measures lines without DOM thrash, so we only paint what fits.",
-    "Width stays constant; height follows the edge-riding phases in user space (VBL origin, VTR opposite).",
-    "End at the same distance from VTR as you started from VBL.",
-  ],
+  script: string | readonly string[];
+  rectWidth: string;
+  minRectHeight: string;
+  maxHeightFraction: number;
+  scrollPixelsPerPercent: number;
+  scrollHeightMultiplier: number;
+  paddingPx: number;
+  lineHeightPx: number;
+  pretextFont: string;
+  debug: boolean;
+} = {
+  script: `Sed posuere consectetur est at lobortis. Fusce dapibus, tellus ac cursus commodo, tortor mauris condimentum nibh, ut fermentum massa justo sit amet risus. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed posuere consectetur est at lobortis. Morbi leo risus, porta ac consectetur ac, vestibulum at eros. Vivamus sagittis lacus vel augue laoreet rutrum faucibus dolor auctor.
+
+Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Nulla vitae elit libero, a pharetra augue. Maecenas faucibus mollis interdum. Etiam porta sem malesuada magna mollis euismod.`,
+  // script: [
+  //   "Scroll drives the shape.",
+  //   "Fixed width: height is one line of text at the ends and grows through the middle of the scroll.",
+  //   "Pretext measures lines without DOM thrash, so we only paint what fits.",
+  //   "Width stays constant; height follows the edge-riding phases in user space (VBL origin, VTR opposite).",
+  //   "End at the same distance from VTR as you started from VBL.",
+  // ],
   /**
    * Fixed CSS width of the unrotated box (height is solved each frame).
    * Supports px, em, rem, vw, vh, vmin, vmax.
    * Example: `"10vmin"` is 10% of the smaller viewport dimension.
    */
-  rectWidth: "10vmin",
+  rectWidth: "30vmin",
   /**
    * Minimum CSS height of the unrotated box (geometry floor).
    * Same length syntax as `rectWidth`.
    * Initial placement at VBL uses this as the hypotenuse of the 45°/45°/90°
    * corner triangle (see spec).
    */
-  minRectHeight: "10vmin",
+  minRectHeight: "30vmin",
   /**
    * Scales the upper bound used when binary-searching local height `h`.
    * The bound is derived from fitting the rotated AABB `(w+h)/√2` in the
@@ -51,6 +66,18 @@ export const animationConfig = {
    * debug import in main.ts) to ship without any debug code.
    */
   debug: false,
-} as const;
+};
 
 export type Config = typeof animationConfig;
+
+/**
+ * Resolves `config.script` to a normalized `readonly string[]`.
+ * When `script` is a plain string it is split on runs of whitespace;
+ * when it is already an array it is returned as-is.
+ */
+export function resolveScript(script: string | readonly string[]): readonly string[] {
+  if (typeof script === "string") {
+    return script.split(/\s+/).filter(Boolean);
+  }
+  return script;
+}

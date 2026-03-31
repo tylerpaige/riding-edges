@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /workspaces/riding-edges/*.html /workspaces/riding-edges/src*)",
+      "Bash(find /workspaces/riding-edges -maxdepth 2 -not -path */node_modules/* -not -path */.pnpm-store/* -not -path */.git/*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}

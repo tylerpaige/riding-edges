@@ -1,7 +1,7 @@
 import gsap from "gsap";
 import ScrollTrigger from "gsap/ScrollTrigger";
 
-import { animationConfig } from "./config";
+import { animationConfig, resolveScript } from "./config";
 // To remove debug support entirely: delete the next line and the `if (debugEnabled)` block below.
 import { buildGeometryDebugSnapshot, formatDebugOverlay, isDebugEnabled, mountDebugOverlay } from "./debug";
 import { geometryForFrame, parseLengthWithViewport } from "./geometry";
@@ -37,6 +37,7 @@ function mount() {
     Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
 
   const cfg = animationConfig;
+  const segments = resolveScript(cfg.script);
   const debugEnabled = isDebugEnabled(cfg);
   // debugPre is the <pre> inside the overlay; null when debug is off.
   const debugPre = debugEnabled ? mountDebugOverlay() : null;
@@ -79,14 +80,15 @@ function mount() {
     textEl.style.padding = `${pad}px`;
 
     // Unlock one more segment per scroll phase, then clamp to what actually fits.
-    const desiredCount = Math.min(
-      cfg.script.length,
-      Math.ceil(tt * cfg.script.length - 1e-9)
-    );
+    // Start at 1 so the first segment is visible before any scrolling.
+    const desiredCount = Math.max(1, Math.min(
+      segments.length,
+      Math.ceil(tt * segments.length - 1e-9)
+    ));
     const fitCount = maxFittingSegmentCount(
-      cfg.script, innerW, innerH, cfg.pretextFont, cfg.lineHeightPx, desiredCount
+      segments, innerW, innerH, cfg.pretextFont, cfg.lineHeightPx, desiredCount
     );
-    textEl.textContent = joinSegments(cfg.script, fitCount);
+    textEl.textContent = joinSegments(segments, fitCount);
 
     if (debugEnabled && debugPre) {
       const snap = buildGeometryDebugSnapshot(tt, widthPx, vw, vh, cfg, minRectHeightPx);
