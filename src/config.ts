@@ -119,7 +119,7 @@ Cras id neque in leo ullamcorper blandit quis a metus. Maecenas mattis pharetra 
   scrollPixelsPerPercent: 12,
   /** Multiplier on the total scroll length derived from scrollPixelsPerPercent. */
   scrollHeightMultiplier: 1,
-  direction: 'tl-to-br',
+  direction: 'bl-to-tr',
   /** Box background — any CSS `background` value, including gradients. */
   rectBackground: "rgb(0 0 0 / 95%)",
   /** Box border color. */

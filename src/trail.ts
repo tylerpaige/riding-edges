@@ -32,7 +32,7 @@ type TrailRect = {
  */
 export function mountTrail(
   root: HTMLElement,
-  cfg: Pick<Config, "trailEnabled" | "trailColor" | "trailFadeDelay" | "trailFadeDuration">
+  cfg: Pick<Config, "trailEnabled" | "trailColor" | "trailFadeDelay" | "trailFadeDuration" | "direction">
 ): (cx: number, cy: number, w: number, h: number) => void {
   if (!cfg.trailEnabled) return () => {};
 
@@ -48,6 +48,12 @@ export function mountTrail(
   const colors = Array.isArray(cfg.trailColor) ? cfg.trailColor : [cfg.trailColor];
   let colorIndex = 0;
 
+  // Match the CSS rotation applied to the box element.
+  const rotateRad =
+    cfg.direction === 'tl-to-br' || cfg.direction === 'br-to-tl'
+      ? Math.PI / 4
+      : -Math.PI / 4;
+
   if (cfg.trailFadeDelay === Infinity) {
     // ── Never-fading path ───────────────────────────────────────────────────
     // Draw directly; no rAF loop needed, canvas is never cleared.
@@ -56,7 +62,7 @@ export function mountTrail(
       colorIndex++;
       ctx.save();
       ctx.translate(cx, cy);
-      ctx.rotate(-Math.PI / 4);
+      ctx.rotate(rotateRad);
       ctx.fillStyle = color;
       ctx.fillRect(-w / 2, -h / 2, w, h);
       ctx.restore();
@@ -92,7 +98,7 @@ export function mountTrail(
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.translate(r.cx, r.cy);
-      ctx.rotate(-Math.PI / 4);
+      ctx.rotate(rotateRad);
       ctx.fillStyle = r.color;
       ctx.fillRect(-r.w / 2, -r.h / 2, r.w, r.h);
       ctx.restore();
