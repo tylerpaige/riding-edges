@@ -168,6 +168,31 @@ export function oneLineBoxHeightPx(cfg: Config): number {
  * All transitions are analytic (closed-form), so no per-frame binary search
  * is needed.
  */
+/**
+ * Core animation function. Given scroll progress `t` ∈ [0, 1], returns the
+ * center position (cx, cy) and unrotated height `h` of the box in screen space.
+ *
+ * All four directions (`cfg.direction`) are derived from the base `bl-to-tr`
+ * geometry via two independent transformations applied before and after the
+ * phase calculations:
+ *
+ *   - **flipT** (`tr-to-bl`, `br-to-tl`): inverts progress so the animation
+ *     runs in reverse (`t → 1 − t`).
+ *   - **flipY** (`tl-to-br`, `br-to-tl`): reflects the resulting center
+ *     vertically (`cy → H − cy`), mapping the BL↔TR diagonal to TL↔BR.
+ *
+ * Base (`bl-to-tr`) phases:
+ *
+ * Phase A (t 0→⅓): h grows from hMin to hSlide while the center rides the
+ *   bottom-left diagonal — bottom tip touches VB, left tip touches VL.
+ *
+ * Phase B (t ⅓→⅔): h is fixed at hSlide; the box slides across:
+ *   - Landscape: slides left→right, straddling VT and VB.
+ *   - Portrait:  slides down→up, straddling VL and VR.
+ *
+ * Phase C (t ⅔→1): h shrinks back from hSlide to hMin while the center rides
+ *   the top-right diagonal — top tip touches VT, right tip touches VR.
+ */
 export function geometryForFrame(
   t: number,
   w: number,
@@ -182,6 +207,10 @@ export function geometryForFrame(
     return { cx: 0, cy: H, h: 0 };
   }
 
+  const flipT = cfg.direction === 'tr-to-bl' || cfg.direction === 'br-to-tl';
+  const flipY = cfg.direction === 'tl-to-br' || cfg.direction === 'br-to-tl';
+  const tEff = flipT ? 1 - tt : tt;
+
   const hMin = Math.max(minRectHeightPx, oneLineBoxHeightPx(cfg));
   // hSlide: the height at which the box exactly spans the shorter viewport
   // dimension diagonally. (w + hSlide) / (2√2) = D/2 when hSlide = D√2 − w.
@@ -192,30 +221,32 @@ export function geometryForFrame(
 
   const phaseFrac = 1 / 3;
 
-  if (tt < phaseFrac) {
-    // Phase A: grow h; center moves along the VBL diagonal.
-    const p = tt / phaseFrac;
-    const h = lerp(hMin, hSlide, p);
-    const k = (w + h) / (2 * Math.SQRT2);
-    return { cx: k, cy: H - k, h };
-  }
+  let cx: number, cy: number, h: number;
 
-  if (tt < 2 * phaseFrac) {
+  if (tEff < phaseFrac) {
+    // Phase A: grow h; center moves along the VBL diagonal.
+    const p = tEff / phaseFrac;
+    h = lerp(hMin, hSlide, p);
+    const k = (w + h) / (2 * Math.SQRT2);
+    cx = k; cy = H - k;
+  } else if (tEff < 2 * phaseFrac) {
     // Phase B: slide at fixed height.
-    const p = (tt - phaseFrac) / phaseFrac;
-    const h = hSlide;
+    const p = (tEff - phaseFrac) / phaseFrac;
+    h = hSlide;
     if (W >= H) {
       // Landscape: cx slides left→right, cy stays at H − half (straddles VB/VT).
-      return { cx: lerp(half, W - half, p), cy: H - half, h };
+      cx = lerp(half, W - half, p); cy = H - half;
     } else {
       // Portrait: cy slides down→up, cx stays at half (straddles VL/VR).
-      return { cx: half, cy: lerp(H - half, half, p), h };
+      cx = half; cy = lerp(H - half, half, p);
     }
+  } else {
+    // Phase C: shrink h; center moves along the VTR diagonal.
+    const p = (tEff - 2 * phaseFrac) / phaseFrac;
+    h = lerp(hSlide, hMin, p);
+    const k = (w + h) / (2 * Math.SQRT2);
+    cx = W - k; cy = k;
   }
 
-  // Phase C: shrink h; center moves along the VTR diagonal.
-  const p = (tt - 2 * phaseFrac) / phaseFrac;
-  const h = lerp(hSlide, hMin, p);
-  const k = (w + h) / (2 * Math.SQRT2);
-  return { cx: W - k, cy: k, h };
+  return { cx, cy: flipY ? H - cy : cy, h };
 }

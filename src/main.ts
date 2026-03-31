@@ -1,7 +1,7 @@
 import gsap from "gsap";
 import ScrollTrigger from "gsap/ScrollTrigger";
 
-import { animationConfig, resolveScript } from "./config";
+import { animationConfig, resolveDirection, resolveScript } from "./config";
 // To remove debug support entirely: delete the next line and the `if (debugEnabled)` block below.
 import { buildGeometryDebugSnapshot, formatDebugOverlay, isDebugEnabled, mountDebugOverlay } from "./debug";
 import { geometryForFrame, parseLengthWithViewport } from "./geometry";
@@ -14,7 +14,18 @@ function mount() {
   const root = document.getElementById("app");
   if (!root) throw new Error("#app missing");
 
-  // The animated box element, rotated −45° in CSS.
+  const emPx = 16;
+  const rootFontPx =
+    Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+
+  const cfg = { ...animationConfig, direction: resolveDirection(animationConfig) };
+
+  // bl-to-tr / tr-to-bl ride the anti-diagonal → −45°.
+  // tl-to-br / br-to-tl ride the main diagonal   → +45°.
+  const rotateDeg =
+    cfg.direction === 'tl-to-br' || cfg.direction === 'br-to-tl' ? 45 : -45;
+
+  // The animated box element, rotated in CSS.
   const rect = document.createElement("div");
   rect.className =
     "square fixed z-50 box-border overflow-hidden shadow-2xl shadow-black/40";
@@ -24,7 +35,7 @@ function mount() {
   rect.style.height = "1em";
   rect.style.fontSize = "16px";
   rect.style.transformOrigin = "50% 50%";
-  rect.style.transform = "rotate(-45deg)";
+  rect.style.transform = `rotate(${rotateDeg}deg)`;
 
   const textEl = document.createElement("p");
   textEl.className =
@@ -32,12 +43,6 @@ function mount() {
   textEl.style.fontFamily = 'Inter, ui-sans-serif, sans-serif';
   rect.appendChild(textEl);
   root.appendChild(rect);
-
-  const emPx = 16;
-  const rootFontPx =
-    Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-
-  const cfg = animationConfig;
 
   rect.style.background = cfg.rectBackground;
   rect.style.borderStyle = "solid";

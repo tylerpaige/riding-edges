@@ -17,6 +17,15 @@ export const animationConfig: {
   scrollPixelsPerPercent: number;
   scrollHeightMultiplier: number;
   /**
+   * Which corner the box starts from and which it travels to.
+   *
+   * - `'bl-to-tr'` — bottom-left → top-right (default)
+   * - `'tr-to-bl'` — top-right → bottom-left
+   * - `'tl-to-br'` — top-left → bottom-right
+   * - `'br-to-tl'` — bottom-right → top-left
+   */
+  direction: 'bl-to-tr' | 'tr-to-bl' | 'tl-to-br' | 'br-to-tl';
+  /**
    * CSS `background` value for the box interior. Supports solid colors,
    * `rgba()`, gradients — anything the `background` property accepts.
    */
@@ -110,6 +119,7 @@ Cras id neque in leo ullamcorper blandit quis a metus. Maecenas mattis pharetra 
   scrollPixelsPerPercent: 12,
   /** Multiplier on the total scroll length derived from scrollPixelsPerPercent. */
   scrollHeightMultiplier: 1,
+  direction: 'tl-to-br',
   /** Box background — any CSS `background` value, including gradients. */
   rectBackground: "rgb(0 0 0 / 95%)",
   /** Box border color. */
@@ -153,4 +163,25 @@ export function resolveScript(script: string | readonly string[]): readonly stri
     return script.split(/\s+/).filter(Boolean);
   }
   return script;
+}
+
+/**
+ * Returns the effective direction for the animation, giving priority to the
+ * URL pathname over `config.direction`.
+ *
+ * Any of the four direction strings (`bl-to-tr`, `tr-to-bl`, `tl-to-br`,
+ * `br-to-tl`) can appear as the first path segment, e.g. `/tl-to-br`.
+ * If the pathname doesn't match, the configured default is returned.
+ */
+export function resolveDirection(cfg: Config): Config['direction'] {
+  const first = window.location.pathname.split('/').filter(Boolean)[0];
+  if (
+    first === 'bl-to-tr' ||
+    first === 'tr-to-bl' ||
+    first === 'tl-to-br' ||
+    first === 'br-to-tl'
+  ) {
+    return first;
+  }
+  return cfg.direction;
 }

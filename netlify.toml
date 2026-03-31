@@ -1,0 +1,26 @@
+[build]
+  publish = "dist"
+
+# Rewrite each direction path to the root so the SPA loads and reads
+# window.location.pathname to resolve the active direction. Status 200
+# serves index.html without changing the URL visible to the browser.
+
+[[redirects]]
+  from = "/bl-to-tr"
+  to   = "/"
+  status = 200
+
+[[redirects]]
+  from = "/tr-to-bl"
+  to   = "/"
+  status = 200
+
+[[redirects]]
+  from = "/tl-to-br"
+  to   = "/"
+  status = 200
+
+[[redirects]]
+  from = "/br-to-tl"
+  to   = "/"
+  status = 200
