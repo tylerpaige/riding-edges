@@ -16,6 +16,23 @@ export const animationConfig: {
   maxHeightFraction: number;
   scrollPixelsPerPercent: number;
   scrollHeightMultiplier: number;
+  /**
+   * CSS `background` value for the box interior. Supports solid colors,
+   * `rgba()`, gradients — anything the `background` property accepts.
+   */
+  rectBackground: string;
+  /**
+   * CSS color of the box border.
+   */
+  rectBorderColor: string;
+  /**
+   * Width of the box border as a CSS length, e.g. `"1px"` or `"2px"`.
+   */
+  rectBorderWidth: string;
+  /**
+   * Color of the text inside the box. Any CSS color value.
+   */
+  rectTextColor: string;
   paddingPx: number;
   lineHeightPx: number;
   pretextFont: string;
@@ -77,6 +94,14 @@ Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus
   scrollPixelsPerPercent: 12,
   /** Multiplier on the total scroll length derived from scrollPixelsPerPercent. */
   scrollHeightMultiplier: 1,
+  /** Box background — any CSS `background` value, including gradients. */
+  rectBackground: "rgb(0 0 0 / 95%)",
+  /** Box border color. */
+  rectBorderColor: "rgb(113 113 122 / 80%)",
+  /** Box border width. */
+  rectBorderWidth: "1px",
+  /** Text color inside the box. */
+  rectTextColor: "#f4f4f5",
   /** Inner padding of the rectangle (px). Subtracted from both dimensions before text layout. */
   paddingPx: 12,
   /** Line height in px. Keep in sync with the `leading-[22px]` Tailwind class on `.square-text`. */
@@ -87,11 +112,11 @@ Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus
   trailEnabled: true,
   // trailColor: "red",
   /** Single color string or array to cycle through. Any CSS color value is valid. */
-  trailColor: ["red", "white"],
+  trailColor: ["#000000","#ffffff"],
   /** How long (ms) each ghost stays fully opaque. `Infinity` = never fades. */
-  trailFadeDelay: 1000,
+  trailFadeDelay: 0,
   /** Duration (ms) of the fade after the delay. `0` = instant disappearance. */
-  trailFadeDuration: 3000,
+  trailFadeDuration: 100,
   /**
    * When true, or when the URL has `?debug=1`, shows a debug overlay and
    * exposes `window.__ridingEdgesDebug`. Set to false (and remove the

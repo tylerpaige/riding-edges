@@ -17,7 +17,7 @@ function mount() {
   // The animated box element, rotated −45° in CSS.
   const rect = document.createElement("div");
   rect.className =
-    "square fixed z-50 box-border overflow-hidden border border-zinc-500/80 bg-zinc-900/95 shadow-2xl shadow-black/40";
+    "square fixed z-50 box-border overflow-hidden shadow-2xl shadow-black/40";
   rect.style.left = "0";
   rect.style.top = "0";
   rect.style.width = "1em";
@@ -28,7 +28,7 @@ function mount() {
 
   const textEl = document.createElement("p");
   textEl.className =
-    "square-text m-0 h-full w-full break-words p-0 text-left text-[15px] font-normal leading-[22px] tracking-tight text-zinc-100";
+    "square-text m-0 h-full w-full break-words p-0 text-left text-[15px] font-normal leading-[22px] tracking-tight";
   textEl.style.fontFamily = 'Inter, ui-sans-serif, sans-serif';
   rect.appendChild(textEl);
   root.appendChild(rect);
@@ -38,6 +38,12 @@ function mount() {
     Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
 
   const cfg = animationConfig;
+
+  rect.style.background = cfg.rectBackground;
+  rect.style.borderStyle = "solid";
+  rect.style.borderColor = cfg.rectBorderColor;
+  rect.style.borderWidth = cfg.rectBorderWidth;
+  textEl.style.color = cfg.rectTextColor;
   const stampTrail = mountTrail(root, cfg);
   const segments = resolveScript(cfg.script);
   const debugEnabled = isDebugEnabled(cfg);

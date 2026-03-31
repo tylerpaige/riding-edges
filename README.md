@@ -1,57 +1,79 @@
-# Riding edges
+# Riding the edges
 
 ## Objective
 
-This project is a **single-page** experience where **vertical scrolling** drives a **fixed square** that travels from the **viewport’s bottom-left** to the **top-right**. The square **stays square** for the whole animation, **grows in the middle** of the scroll (then shrinks back to the ending size), and **fills with more copy** as space allows. Text layout is measured **without repeated DOM reads** using [Pretext](https://github.com/chenglou/pretext), and scroll scrubbing uses [GSAP ScrollTrigger](https://greensock.com/docs/v3/Plugins/ScrollTrigger/).
+A single-page experience where vertical scrolling drives a fixed-width rectangle — rotated −45° — that travels from the viewport's bottom-left corner to the top-right. The box grows taller through the middle of the scroll (then shrinks back), and fills with more copy as space allows. Text layout is measured without DOM reads using [Pretext](https://github.com/chenglou/pretext); scroll scrubbing uses [GSAP ScrollTrigger](https://greensock.com/docs/v3/Plugins/ScrollTrigger/).
 
-All animation behavior and copy are controlled from one exported object in [`src/main.ts`](src/main.ts): `animationConfig`.
+All animation behaviour and copy are controlled from [`src/config.ts`](src/config.ts).
 
 ## Configuration
 
-Edit **`animationConfig`** in [`src/main.ts`](src/main.ts).
+Edit `animationConfig` in [`src/config.ts`](src/config.ts).
+
+### Box & scroll
 
 | Option | Type | Description |
 | --- | --- | --- |
-| `script` | `string[]` | **Logical segments** of the story. Segments are joined with spaces in order. How many segments are *eligible* to show grows with scroll progress; how many actually render is capped by what fits inside the square (see below). |
-| `startSize` | `string` | Side length at **scroll start** (`t = 0`). Supports CSS-like lengths, e.g. `1em`, `16px`. `em` is resolved against the square’s `font-size` (16px). |
-| `endSize` | `string` | Side length at **scroll end** (`t = 1`). Same parsing rules as `startSize`. |
-| `scrollPixelsPerPercent` | `number` | Together with `scrollHeightMultiplier`, sets how **tall** the page is beyond one viewport. Total extra scroll distance is **`100 × scrollPixelsPerPercent × scrollHeightMultiplier`** pixels. The document uses `min-height: calc(100vh + that distance)` so scroll progress maps cleanly to `t ∈ [0, 1]`. |
-| `scrollHeightMultiplier` | `number` | Scales the extra scroll distance from `scrollPixelsPerPercent` (default `1`). |
-| `peakScale` | `number` | Extra **mid-scroll** size added as **`peakScale × min(vw, vh) × sin(πt)`** on top of the linear interpolation between start and end side lengths. At `t = 0` and `t = 1` the sine term is zero, so the square still matches `startSize` / `endSize` at the ends. |
-| `maxSizeFraction` | `number` | Hard cap: side length never exceeds **`maxSizeFraction × min(vw, vh)`** so the square stays on screen. |
-| `paddingPx` | `number` | Inner padding (pixels) for the text block inside the square. |
-| `lineHeightPx` | `number` | Line height in **pixels** for Pretext layout. **Keep in sync** with the `.square-text` `leading-[…]` class in [`src/main.ts`](src/main.ts). |
-| `pretextFont` | `string` | Canvas-style **font** string passed to Pretext’s `prepare()`. **Must match** the visual `font` of `.square-text` (size, weight, family). Pretext’s docs recommend a **named** font stack (not `system-ui`) for consistent measurement. |
+| `script` | `string \| string[]` | Copy shown inside the box. A plain string is split on whitespace into words; an array treats each element as one segment. Segments are joined with spaces. How many are visible at any moment is determined purely by fit — see [Segment visibility](#segment-visibility). |
+| `rectWidth` | `string` | Fixed **unrotated width** of the box for the whole animation. Supports `px`, `em`, `rem`, `vw`, `vh`, `vmin`, `vmax`. |
+| `minRectHeight` | `string` | Minimum **unrotated height** of the box (the height used at the start and end of the scroll). Same length syntax as `rectWidth`. |
+| `maxHeightFraction` | `number` | Scales the upper bound when solving for the box height in each phase. Default `1`. |
+| `scrollPixelsPerPercent` | `number` | Controls total page height. Extra scroll distance is `100 × scrollPixelsPerPercent × scrollHeightMultiplier` px. |
+| `scrollHeightMultiplier` | `number` | Additional multiplier on the scroll range (default `1`). |
+| `paddingPx` | `number` | Inner padding (px) subtracted from both dimensions before text layout. |
+| `lineHeightPx` | `number` | Line height in px for Pretext layout. **Keep in sync** with the `leading-[…]` class on `.square-text` in [`src/styles.css`](src/styles.css). |
+| `pretextFont` | `string` | Canvas-style font string passed to Pretext. Must match the visual font of `.square-text` (size, weight, family). |
+
+### Trail
+
+A canvas behind the box paints a ghost rectangle at every position the box visits, leaving a visible trail.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `trailEnabled` | `boolean` | Set to `false` to disable the trail entirely. |
+| `trailColor` | `string \| string[]` | CSS color(s) for ghost rectangles. An array cycles through the colors in order. |
+| `trailFadeDelay` | `number` | How long (ms) each ghost stays at full opacity before fading. `Infinity` (the default) means ghosts never fade and accumulate permanently. |
+| `trailFadeDuration` | `number` | Duration (ms) of the fade-out after the delay. `0` means instant disappearance. Ignored when `trailFadeDelay` is `Infinity`. |
+
+### Debug
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `debug` | `boolean` | Shows a geometry debug overlay and exposes `window.__ridingEdgesDebug`. Also enabled by adding `?debug=1` to the URL. |
 
 ### Segment visibility
 
-- A **desired** segment count comes from scroll: `ceil(t × script.length)` (clamped), so more of the script unlocks as you scroll.
-- The **rendered** count is the largest number of leading segments whose Pretext-measured height fits in the **inner** width and height (side length minus padding). If the box is still too small, fewer segments show even if scroll “wants” more.
+Segments are always candidates to show; the visible count is simply the largest number of leading segments whose Pretext-measured height fits in the current inner box. As the box grows through scroll, more text becomes visible.
 
 ## Approach
 
 ### Scroll and timing
 
-- **GSAP ScrollTrigger** (`scrub: true`) tracks scroll through the full document and exposes **`progress`** in `[0, 1]`, which is treated as **`t`**.
-- The page height is set via CSS variable **`--scroll-doc-height`**: `calc(100vh + scrollRangePx)` where `scrollRangePx = 100 × scrollPixelsPerPercent × scrollHeightMultiplier`.
+**GSAP ScrollTrigger** (`scrub: true`) maps scroll position to a normalised progress value `t ∈ [0, 1]`. The page height is set via the CSS variable `--scroll-doc-height: calc(100vh + scrollRangePx)`.
 
-### Square geometry
+### Box geometry
 
-- The square is **`position: fixed`** with equal **width** and **height** and `aspect-square` as a safeguard.
-- **Side length** `s(t)`: linear blend from resolved `startSize` to `endSize`, plus the **`peakScale` × sin(πt)** term, then clamped by **`maxSizeFraction`**.
-- **Position**: the bottom-left placement is interpolated toward the top-right using  
-  `left = (vw − s) × t` and `bottom = (vh − s) × t`.  
-  At `t = 0` the square sits in the bottom-left; at `t = 1` it sits in the top-right, still square. Along the way, edges stay in contact with the viewport boundary in a way consistent with sliding along that diagonal (the implementation follows the plan’s blended **L-anchor** idea: from bottom/left toward top/right).
+The box is `position: fixed`, has a **fixed unrotated width** (`rectWidth`) and a **variable unrotated height**, and is rotated **−45°** around its centre. The animation has three equal phases:
+
+- **Phase A (`t` 0 → ⅓):** Height grows from `minRectHeight` to the slide height. The centre moves along the bottom-left diagonal so the rotated box always touches the left and bottom viewport edges.
+- **Phase B (`t` ⅓ → ⅔):** Height is fixed. The box slides across the viewport — left→right in landscape, down→up in portrait — straddling the opposite pair of edges.
+- **Phase C (`t` ⅔ → 1):** Height shrinks back to `minRectHeight`. The centre moves along the top-right diagonal so the box always touches the top and right viewport edges.
+
+All positions are computed analytically in [`src/geometry.ts`](src/geometry.ts) with no per-frame binary search.
+
+### Trail canvas
+
+A `<canvas>` sized once at mount (never resized) sits behind the box at `z-index: 49`. Keeping the canvas dimensions fixed ensures iOS browser-chrome resize events — which fire when the URL bar appears or disappears — never clear the pixel buffer.
+
+When `trailFadeDelay` is `Infinity`, ghosts are drawn directly onto the canvas and it is never cleared. When a finite delay is set, rects are stored in memory with timestamps and a `requestAnimationFrame` loop redraws them with decreasing `globalAlpha`; the loop stops when all entries have faded. See [`src/trail.ts`](src/trail.ts).
 
 ### Text with Pretext
 
-- For each candidate prefix of segments, the app uses **`prepare(text, pretextFont)`** once per distinct string (cached), then **`layout(prepared, innerWidth, lineHeight)`** to get height.
-- A **binary search** finds the maximum number of leading segments that still fit in the inner box. That avoids `getBoundingClientRect` / layout thrash for measuring text, in line with [Pretext’s design](https://github.com/chenglou/pretext).
-- On resize or after fonts load, **ScrollTrigger** is refreshed and the frame is reapplied.
+For each candidate prefix of segments the app calls **`prepare(text, font)`** once (result cached), then **`layout(prepared, innerWidth, lineHeight)`** to get the rendered height. A binary search over the segment array finds the maximum count that fits. This avoids `getBoundingClientRect` and layout thrash on every scroll tick.
 
 ### Build
 
-- **TypeScript** is bundled with **esbuild**; **Tailwind v4** is compiled with **PostCSS** (`@tailwindcss/postcss`). **`pnpm dev`** runs a one-time **`build`**, then watches CSS and JS and serves **`dist`** on port **5173**.
+TypeScript is bundled with **esbuild**; Tailwind v4 is compiled with **PostCSS**. `pnpm dev` runs a one-time build, then watches CSS and JS and serves `dist/` on port **5173**.
 
 ## Requirements
 
