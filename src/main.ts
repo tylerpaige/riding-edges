@@ -13,6 +13,17 @@ function mount() {
   const root = document.getElementById("app");
   if (!root) throw new Error("#app missing");
 
+  // Canvas that accumulates red ghost rectangles wherever the box has been.
+  // Sized once at mount — never resized, so its pixel buffer is never cleared.
+  const trailCanvas = document.createElement("canvas");
+  trailCanvas.style.cssText =
+    "position:fixed;inset:0;width:100%;height:100%;z-index:49;pointer-events:none;";
+  trailCanvas.width = window.innerWidth;
+  trailCanvas.height = window.innerHeight;
+  root.appendChild(trailCanvas);
+  const trailCtx = trailCanvas.getContext("2d")!;
+  let trailColorIndex = 0;;
+
   // The animated box element, rotated −45° in CSS.
   const rect = document.createElement("div");
   rect.className =
@@ -85,6 +96,17 @@ function mount() {
       segments, innerW, innerH, cfg.pretextFont, cfg.lineHeightPx, segments.length
     );
     textEl.textContent = joinSegments(segments, fitCount);
+
+    if (cfg.trailEnabled) {
+      const colors = Array.isArray(cfg.trailColor) ? cfg.trailColor : [cfg.trailColor];
+      trailCtx.save();
+      trailCtx.translate(cx, cy);
+      trailCtx.rotate(-Math.PI / 4);
+      trailCtx.fillStyle = colors[trailColorIndex % colors.length] as string;
+      trailCtx.fillRect(-w / 2, -h / 2, w, h);
+      trailCtx.restore();
+      trailColorIndex++;
+    }
 
     if (debugEnabled && debugPre) {
       const snap = buildGeometryDebugSnapshot(tt, widthPx, vw, vh, cfg, minRectHeightPx);

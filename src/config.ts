@@ -19,6 +19,18 @@ export const animationConfig: {
   paddingPx: number;
   lineHeightPx: number;
   pretextFont: string;
+  /**
+   * When true, paints a ghost rectangle on the trail canvas at each position
+   * the box visits. When false the canvas is never drawn to.
+   */
+  trailEnabled: boolean;
+  /**
+   * Color(s) used for trail rectangles.
+   *
+   * - `string` — every ghost is this color.
+   * - `string[]` — cycles through the array in order as the box moves.
+   */
+  trailColor: string | readonly string[];
   debug: boolean;
 } = {
   script: `Sed posuere consectetur est at lobortis. Fusce dapibus, tellus ac cursus commodo, tortor mauris condimentum nibh, ut fermentum massa justo sit amet risus. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed posuere consectetur est at lobortis. Morbi leo risus, porta ac consectetur ac, vestibulum at eros. Vivamus sagittis lacus vel augue laoreet rutrum faucibus dolor auctor.
@@ -60,6 +72,9 @@ Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus
   lineHeightPx: 22,
   /** Font shorthand passed to Pretext for line-break measurement. Must match `.square-text` in CSS. */
   pretextFont: '400 15px "Inter", ui-sans-serif, sans-serif',
+  trailEnabled: true,
+  // trailColor: "red",
+  trailColor: ["red", "white"],
   /**
    * When true, or when the URL has `?debug=1`, shows a debug overlay and
    * exposes `window.__ridingEdgesDebug`. Set to false (and remove the
