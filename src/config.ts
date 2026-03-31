@@ -31,6 +31,17 @@ export const animationConfig: {
    * - `string[]` — cycles through the array in order as the box moves.
    */
   trailColor: string | readonly string[];
+  /**
+   * How long (ms) a trail ghost stays at full opacity before fading begins.
+   * Set to `Infinity` (the default) to never fade — ghosts accumulate forever.
+   */
+  trailFadeDelay: number;
+  /**
+   * Duration (ms) of the fade-out once the delay has elapsed.
+   * A value of `0` causes an instant disappearance after the delay.
+   * Ignored when `trailFadeDelay` is `Infinity`.
+   */
+  trailFadeDuration: number;
   debug: boolean;
 } = {
   script: `Sed posuere consectetur est at lobortis. Fusce dapibus, tellus ac cursus commodo, tortor mauris condimentum nibh, ut fermentum massa justo sit amet risus. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed posuere consectetur est at lobortis. Morbi leo risus, porta ac consectetur ac, vestibulum at eros. Vivamus sagittis lacus vel augue laoreet rutrum faucibus dolor auctor.
@@ -72,9 +83,15 @@ Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus
   lineHeightPx: 22,
   /** Font shorthand passed to Pretext for line-break measurement. Must match `.square-text` in CSS. */
   pretextFont: '400 15px "Inter", ui-sans-serif, sans-serif',
+  /** Set to false to disable the trail entirely without removing the feature. */
   trailEnabled: true,
   // trailColor: "red",
+  /** Single color string or array to cycle through. Any CSS color value is valid. */
   trailColor: ["red", "white"],
+  /** How long (ms) each ghost stays fully opaque. `Infinity` = never fades. */
+  trailFadeDelay: 1000,
+  /** Duration (ms) of the fade after the delay. `0` = instant disappearance. */
+  trailFadeDuration: 3000,
   /**
    * When true, or when the URL has `?debug=1`, shows a debug overlay and
    * exposes `window.__ridingEdgesDebug`. Set to false (and remove the
